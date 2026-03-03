@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DealRoom — Enterprise Sales Platform</title>
+  <meta name="description" content="Private deal workspace for enterprise sales collaboration." />
+  <!-- Favicon -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231A4FBA'/><text y='22' x='5' font-size='18' font-family='sans-serif' font-weight='800' fill='white'>D</text></svg>" />
+  <!-- React + ReactDOM -->
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <!-- Babel standalone (transforms JSX in browser) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Plus Jakarta Sans', 'Segoe UI', sans-serif; background: #F7F8FA; }
+    #root { min-height: 100vh; }
+    /* Loading screen */
+    #loading {
+      position: fixed; inset: 0; background: #F7F8FA;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      z-index: 9999; transition: opacity 0.4s ease;
+    }
+    #loading .logo {
+      width: 52px; height: 52px; background: linear-gradient(135deg, #1A4FBA, #3B6FE8);
+      border-radius: 13px; display: flex; align-items: center; justify-content: center;
+      font-size: 24px; font-weight: 800; color: white; margin-bottom: 18px;
+      box-shadow: 0 8px 32px rgba(26,79,186,0.25);
+    }
+    #loading h1 { font-size: 20px; font-weight: 800; color: #111827; letter-spacing: -0.5px; margin-bottom: 6px; }
+    #loading p { font-size: 13px; color: #9CA3AF; }
+    #loading .dots span {
+      display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+      background: #1A4FBA; margin: 0 3px; margin-top: 20px;
+      animation: bounce 1.2s ease infinite;
+    }
+    #loading .dots span:nth-child(2) { animation-delay: 0.2s; }
+    #loading .dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce { 0%,80%,100%{transform:scale(0.6);opacity:0.4} 40%{transform:scale(1);opacity:1} }
+  </style>
+</head>
+<body>
+
+  <!-- Loading screen (hidden once app mounts) -->
+  <div id="loading">
+    <div class="logo">D</div>
+    <h1>DealRoom</h1>
+    <p>Enterprise Sales Platform</p>
+    <div class="dots"><span></span><span></span><span></span></div>
+  </div>
+
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react" src="app.jsx"></script>
+
+  <script>
+    // Mount the app once Babel has processed app.jsx
+    // Babel standalone processes external scripts async — poll for component
+    function mount() {
+      if (typeof DealRoom !== 'undefined') {
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(React.createElement(DealRoom));
+        // Fade out loading screen
+        const loader = document.getElementById('loading');
+        loader.style.opacity = '0';
+        setTimeout(() => loader.style.display = 'none', 400);
+      } else {
+        setTimeout(mount, 80);
+      }
+    }
+    // Give Babel a moment to parse the JSX file
+    setTimeout(mount, 300);
+  </script>
+
+</body>
+</html>
