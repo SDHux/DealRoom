@@ -1,8 +1,9 @@
-import { useState } from "react";
+const { useState } = React;
 
 const API = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_KEY = ""; // ← Paste your Anthropic API key here
 const callClaude = async (sys, usr, max = 1400) => {
-  const r = await fetch(API, { method:"POST", headers:{"Content-Type":"application/json"},
+  const r = await fetch(API, { method:"POST", headers:{"Content-Type":"application/json","x-api-key":ANTHROPIC_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
     body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:max, system:sys, messages:[{role:"user",content:usr}] })});
   const d = await r.json(); return d.content?.[0]?.text || "";
 };
@@ -276,7 +277,7 @@ const DealCreator = ({onSave,onClose}) => {
   </div>);
 };
 
-export default function DealRoom() {
+function DealRoom() {
   const [deals,setDeals]=useState(INIT_DEALS);
   const [activeId,setActiveId]=useState(1);
   const [viewMode,setViewMode]=useState("rep");
@@ -743,3 +744,5 @@ select option{background:#fff}`;
     {toast&&<div style={{position:"fixed",bottom:24,left:"50%",transform:"translateX(-50%)",background:P.text,borderRadius:8,padding:"10px 20px",fontSize:12,color:"#fff",fontWeight:600,boxShadow:"0 4px 20px rgba(0,0,0,0.15)",zIndex:999}}>{toast} ✓</div>}
   </div>;
 }
+
+globalThis.DealRoom = DealRoom;
