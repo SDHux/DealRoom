@@ -1,7 +1,7 @@
 const { useState } = React;
 
 const API = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
+const ANTHROPIC_KEY = "";
 const callClaude = async (sys, usr, max = 1400) => {
   const r = await fetch(API, { method:"POST", headers:{"Content-Type":"application/json","x-api-key":ANTHROPIC_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
     body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:max, system:sys, messages:[{role:"user",content:usr}] })});
