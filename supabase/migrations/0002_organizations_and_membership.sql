@@ -5,9 +5,10 @@
 --            table is where "is this user allowed to touch billing" gets checked from).
 --            Exactly one owner per org. Only the owner can remove or demote an admin, or
 --            promote someone to admin/owner.
---   admin  - can invite and remove plain members (not other admins, not the owner). Sees
---            every deal in the org, same as everyone (see deals policies in 0003). Cannot
---            touch billing, cannot delete the org, cannot manage other admins.
+--   admin  - can invite and remove plain members (not other admins, not the owner). Has
+--            full read/write access to every deal in the org, same as owner (e.g. to
+--            reassign or edit a departed rep's deals -- see deals policies in 0003).
+--            Cannot touch billing, cannot delete the org, cannot manage other admins.
 --   member - can create deals and manage (edit/delete) their own; can see every other
 --            deal in the org too (team-wide visibility by default, nothing is private).
 --            No membership-management rights.

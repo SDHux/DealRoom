@@ -65,11 +65,10 @@ begin
 end;
 $$;
 
--- Whether the current user can edit/delete a given deal: its own creator, or an org owner
--- (owner has full access per the role model in 0002). Admins and other members do NOT get
--- write access to a deal they didn't create, only read access (see deals_select below) --
--- matches "member: manage their own deals, see everyone else's" and admin's power being
--- team-roster management, not deal-content override.
+-- Whether the current user can edit/delete a given deal: its own creator, or an org
+-- owner/admin (both get full write access to any deal in the org -- e.g. to reassign or
+-- edit a departed rep's deals -- not just their own). Plain members can only manage deals
+-- they created themselves.
 create or replace function public.can_manage_deal(p_deal_id uuid)
 returns boolean
 language sql
@@ -80,7 +79,7 @@ as $$
   select exists (
     select 1 from public.deals
     where id = p_deal_id
-      and (created_by = auth.uid() or current_org_role(org_id) = 'owner')
+      and (created_by = auth.uid() or current_org_role(org_id) in ('owner', 'admin'))
   );
 $$;
 
@@ -100,9 +99,9 @@ create policy deals_insert on deals
 
 create policy deals_update on deals
   for update
-  using (created_by = auth.uid() or current_org_role(org_id) = 'owner')
-  with check (created_by = auth.uid() or current_org_role(org_id) = 'owner');
+  using (can_manage_deal(id))
+  with check (can_manage_deal(id));
 
 create policy deals_delete on deals
   for delete
-  using (created_by = auth.uid() or current_org_role(org_id) = 'owner');
+  using (can_manage_deal(id));
