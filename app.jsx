@@ -601,6 +601,10 @@ function DealRoom({prospectShareSlug}) {
   const [activeId,setActiveId]=useState(null);
   const [viewMode,setViewMode]=useState(prospectShareSlug?"prospect":"rep");
   const [prospectAuth,setProspectAuth]=useState({});
+  // Set only on the real external-prospect path (never the rep-preview-as-prospect
+  // toggle) -- {id, dealId} for the one deal_visits row this browser session owns. Gates
+  // document-view logging and the visit-duration heartbeat below.
+  const [prospectVisit,setProspectVisit]=useState(null);
   const [tab,setTab]=useState(prospectShareSlug?"welcome":"map");
   const [aiOpen,setAiOpen]=useState(false);
   const [aiMode,setAiMode]=useState(null);
@@ -727,6 +731,38 @@ function DealRoom({prospectShareSlug}) {
     return ()=>{cancelled=true;};
   },[session,prospectShareSlug,refreshKey]);
 
+  // Visit-duration heartbeat: a browser can't reliably signal "the tab just closed", so
+  // this tracks visible-time via the Page Visibility API and periodically overwrites (not
+  // accumulates) duration_seconds -- the server clamps it, so an overlapping/late call
+  // can never record less real data than an earlier one. beforeunload is a best-effort
+  // extra flush, not the primary mechanism (navigator.sendBeacon can't carry the Supabase
+  // bearer token this RPC needs, so a guaranteed terminal write isn't possible here).
+  useEffect(()=>{
+    if(!prospectVisit)return;
+    let visibleAccumMs=0;
+    let lastResume=document.visibilityState==="visible"?Date.now():null;
+    const flush=()=>{
+      const totalMs=visibleAccumMs+(lastResume?Date.now()-lastResume:0);
+      sb.rpc("update_deal_visit_duration",{p_visit_id:prospectVisit.id,p_duration_seconds:Math.round(totalMs/1000)});
+    };
+    const onVisibility=()=>{
+      if(document.visibilityState==="hidden"){
+        if(lastResume){visibleAccumMs+=Date.now()-lastResume;lastResume=null;}
+        flush();
+      }else{
+        lastResume=Date.now();
+      }
+    };
+    document.addEventListener("visibilitychange",onVisibility);
+    window.addEventListener("beforeunload",flush);
+    const interval=setInterval(flush,25000);
+    return ()=>{
+      document.removeEventListener("visibilitychange",onVisibility);
+      window.removeEventListener("beforeunload",flush);
+      clearInterval(interval);
+    };
+  },[prospectVisit]);
+
   const deal=deals.find(d=>d.id===activeId);
   const flash=msg=>{setToast(msg);setTimeout(()=>setToast(null),2800);};
 
@@ -836,12 +872,29 @@ function DealRoom({prospectShareSlug}) {
   // Signed URL minted on demand (private bucket, so there's no permanent public URL to
   // store) -- the necessary difference from the org-logos public-bucket flow in
   // SettingsModal, which bakes one URL in at upload time.
+  // Best-effort: a logging failure must never block the prospect from reading their
+  // document. No-ops immediately for a rep (viewMode "rep" or the local preview-as-
+  // prospect toggle) since prospectVisit is only ever set via the real, RPC-backed
+  // prospect login flow below.
+  const logDocumentView=async f=>{
+    if(!prospectVisit)return;
+    const {data:viewerName,error}=await sb.rpc("log_document_view",{p_visit_id:prospectVisit.id,p_document_id:f.id});
+    if(error)return;
+    setDeals(prev=>prev.map(d=>d.id!==prospectVisit.dealId?d:{...d,content:d.content.map(c=>c.id!==f.id?c:{
+      ...c,
+      views:(c.views||0)+1,
+      viewers:Array.from(new Set([...(c.viewers||[]),viewerName])),
+      lastViewed:`${viewerName} · just now`,
+    })}));
+  };
+
   const openDocument=async f=>{
     if(!f.storagePath){flash("File not available");return;}
-    if(f.type==="link"){window.open(f.storagePath,"_blank","noopener");return;}
+    if(f.type==="link"){window.open(f.storagePath,"_blank","noopener");logDocumentView(f);return;}
     const {data,error}=await sb.storage.from("deal-documents").createSignedUrl(f.storagePath,300);
     if(error||!data){flash("Couldn't open file");return;}
     window.open(data.signedUrl,"_blank","noopener");
+    logDocumentView(f);
   };
 
   const repTabs=[["map","Action Plan"],["summary","Executive Summary"],["discovery","Discovery"],["content","Content"],["stakeholders","Stakeholders"],["analytics","Analytics"]];
@@ -887,10 +940,14 @@ select option{background:#fff}
   if(prospectShareSlug){
     if(!prospectAuth[prospectShareSlug]){
       return <div style={{fontFamily:"'Inter','Segoe UI',sans-serif"}}><style>{CSS}</style>
-        <ProspectLogin shareSlug={prospectShareSlug} onSuccess={mappedDeal=>{
+        <ProspectLogin shareSlug={prospectShareSlug} onSuccess={async mappedDeal=>{
           setDeals([mappedDeal]);
           setActiveId(mappedDeal.id);
           setProspectAuth(p=>({...p,[prospectShareSlug]:true}));
+          // Starts the one deal_visits row this browser session owns. Best-effort --
+          // a failure here must never block the prospect from seeing their deal room.
+          const {data:visitId,error}=await sb.rpc("start_deal_visit",{p_deal_id:mappedDeal.id});
+          if(!error&&visitId)setProspectVisit({id:visitId,dealId:mappedDeal.id});
         }}/>
       </div>;
     }
