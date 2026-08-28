@@ -507,13 +507,8 @@ function DealRoom({prospectShareSlug}) {
   },[session,prospectShareSlug,refreshKey]);
 
   const deal=deals.find(d=>d.id===activeId);
-  const upd=d=>setDeals(prev=>prev.map(x=>x.id===d.id?d:x));
   const flash=msg=>{setToast(msg);setTimeout(()=>setToast(null),2800);};
 
-  // Creating a brand-new deal room is real write-through to Supabase (unlike editing an
-  // existing deal's tasks/stakeholders/status, which stays local-state-only for now --
-  // see the step's scope boundary). Without this, a fresh org could never get its first
-  // deal past a page refresh.
   const createDeal=async(draft)=>{
     const slugBase=(draft.company||"deal").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"")||"deal";
     const shareSlug=`${slugBase}-${crypto.randomUUID().slice(0,8)}`;
@@ -558,6 +553,43 @@ function DealRoom({prospectShareSlug}) {
     setShowCreator(false);
     flash("Deal room created!");
     setRefreshKey(k=>k+1);
+  };
+
+  // Task mutations: write to Supabase first, then reflect the confirmed result in local
+  // state. can_manage_deal (creator or org owner/admin) already gates these at the RLS
+  // layer -- a member who doesn't own this deal simply gets an error back.
+  const updateTaskStatus=async(taskId,status)=>{
+    const {error}=await sb.from("deal_tasks").update({status}).eq("id",taskId);
+    if(error){flash("Couldn't update task");return;}
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,mapItems:d.mapItems.map(t=>t.id===taskId?{...t,status}:t)}));
+  };
+
+  const deleteTask=async(taskId)=>{
+    const {error}=await sb.from("deal_tasks").delete().eq("id",taskId);
+    if(error){flash("Couldn't delete task");return;}
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,mapItems:d.mapItems.filter(t=>t.id!==taskId)}));
+  };
+
+  const addTask=async(draft)=>{
+    const {data,error}=await sb.from("deal_tasks").insert({
+      deal_id:deal.id,
+      created_by:session.user.id,
+      phase:draft.phase,
+      task:draft.task,
+      owner_name:draft.owner||null,
+      buyer_owner_label:draft.buyerOwner||null,
+      due_date:draft.dueDate||null,
+      status:"pending",
+      notes:draft.notes||null,
+      approval_required:!!draft.approvalRequired,
+      sort_order:deal.mapItems.length,
+    }).select().single();
+    if(error||!data){flash("Couldn't add task");return;}
+    const mapped={id:data.id,phase:data.phase,task:data.task,owner:data.owner_name,buyerOwner:data.buyer_owner_label,dueDate:data.due_date,status:data.status,notes:data.notes,approvalRequired:data.approval_required};
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,mapItems:[...d.mapItems,mapped]}));
+    setNewTask({phase:"Value Alignment",task:"",owner:"Mark H.",buyerOwner:"",dueDate:"",status:"pending",notes:"",approvalRequired:false});
+    setShowAddTask(false);
+    flash("Task added");
   };
 
   const repTabs=[["map","Action Plan"],["summary","Executive Summary"],["discovery","Discovery"],["content","Content"],["stakeholders","Stakeholders"],["analytics","Analytics"]];
@@ -823,9 +855,9 @@ select option{background:#fff}`;
                       <div style={{fontSize:12,color:P.textSec}}>{task.owner}</div>
                       <div style={{fontSize:12,color:P.textSec}}>{task.buyerOwner}</div>
                       <div style={{fontSize:11,color:P.textMute}}>{task.dueDate}</div>
-                      {viewMode==="rep"?<select value={task.status} onChange={e=>upd({...deal,mapItems:deal.mapItems.map(t=>t.id===task.id?{...t,status:e.target.value}:t)})} style={{background:sc.bg,border:`1px solid ${sc.border}`,color:sc.text,borderRadius:5,padding:"4px 6px",fontSize:11,fontWeight:700,cursor:"pointer",width:"100%"}}><option value="complete">Complete</option><option value="in-progress">In Progress</option><option value="pending">Pending</option></select>
+                      {viewMode==="rep"?<select value={task.status} onChange={e=>updateTaskStatus(task.id,e.target.value)} style={{background:sc.bg,border:`1px solid ${sc.border}`,color:sc.text,borderRadius:5,padding:"4px 6px",fontSize:11,fontWeight:700,cursor:"pointer",width:"100%"}}><option value="complete">Complete</option><option value="in-progress">In Progress</option><option value="pending">Pending</option></select>
                       :<div style={{padding:"3px 8px",borderRadius:4,background:sc.bg,border:`1px solid ${sc.border}`,color:sc.text,fontSize:11,fontWeight:700,textAlign:"center"}}>{sc.label}</div>}
-                      {viewMode==="rep"&&<button onClick={()=>upd({...deal,mapItems:deal.mapItems.filter(t=>t.id!==task.id)})} style={{background:"none",border:"none",color:P.textMute,cursor:"pointer",fontSize:14}}>×</button>}
+                      {viewMode==="rep"&&<button onClick={()=>deleteTask(task.id)} style={{background:"none",border:"none",color:P.textMute,cursor:"pointer",fontSize:14}}>×</button>}
                     </div>);})}
                 </div>
               </div>;})}
@@ -842,7 +874,7 @@ select option{background:#fff}`;
                 <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:P.textSec,cursor:"pointer"}}><input type="checkbox" checked={newTask.approvalRequired} onChange={e=>setNewTask({...newTask,approvalRequired:e.target.checked})}/>Approval Required</label>
               </div>
               <div style={{display:"flex",gap:8}}>
-                <button onClick={()=>{if(!newTask.task.trim())return;upd({...deal,mapItems:[...deal.mapItems,{...newTask,id:Date.now()}]});setNewTask({phase:"Value Alignment",task:"",owner:"Mark H.",buyerOwner:"",dueDate:"",status:"pending",notes:"",approvalRequired:false});setShowAddTask(false);flash("Task added");}} style={{padding:"8px 18px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Add Task</button>
+                <button onClick={()=>{if(!newTask.task.trim())return;addTask(newTask);}} style={{padding:"8px 18px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Add Task</button>
                 <button onClick={()=>setShowAddTask(false)} style={{padding:"8px 14px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,cursor:"pointer"}}>Cancel</button>
               </div>
             </div>:<button onClick={()=>setShowAddTask(true)} style={{width:"100%",padding:10,background:"none",border:`1.5px dashed ${P.border}`,borderRadius:8,color:P.textMute,fontSize:12,cursor:"pointer"}} onMouseOver={e=>{e.currentTarget.style.borderColor=P.accent;e.currentTarget.style.color=P.accent;}} onMouseOut={e=>{e.currentTarget.style.borderColor=P.border;e.currentTarget.style.color=P.textMute;}}>+ Add Task</button>)}
