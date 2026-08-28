@@ -589,6 +589,37 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
   </div>);
 };
 
+// The deal's share_slug/access_code were being generated and stored (createDeal) but
+// never surfaced anywhere in the UI -- a rep had no way to actually hand a prospect their
+// link without going into Supabase directly. This is that missing affordance.
+const ShareModal = ({deal,onClose}) => {
+  const [copied,setCopied]=useState(null); // "link" | "code" | null
+  const link=`${window.location.origin}/d/${deal.shareSlug}`;
+  const copy=(text,which)=>{navigator.clipboard.writeText(text);setCopied(which);setTimeout(()=>setCopied(null),1800);};
+  const row={display:"flex",alignItems:"center",gap:8,border:`1px solid ${P.border}`,borderRadius:8,padding:"10px 12px",background:P.bg};
+  const btn={padding:"7px 14px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"};
+  return (<div style={{position:"fixed",inset:0,background:"rgba(27,31,35,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
+    <div style={{background:P.surface,borderRadius:16,width:480,padding:"24px 24px 28px",boxShadow:"0 24px 64px rgba(0,0,0,0.16)"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+        <span className="headline" style={{fontSize:18,color:P.text}}>Share this Deal Room</span>
+        <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,color:P.textMute,cursor:"pointer"}}>×</button>
+      </div>
+      <div style={{fontSize:12.5,color:P.textMute,marginBottom:18,lineHeight:1.5}}>Send your prospect this link and access code. They'll use both to get into their private view of {deal.company}.</div>
+      <div style={lbl0}>Prospect Link</div>
+      <div style={{...row,marginBottom:14}}>
+        <span style={{flex:1,fontSize:12.5,color:P.textSec,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{link}</span>
+        <button onClick={()=>copy(link,"link")} style={btn}>{copied==="link"?"Copied ✓":"Copy"}</button>
+      </div>
+      <div style={lbl0}>Access Code</div>
+      <div style={row}>
+        <span className="mono" style={{flex:1,fontSize:14,fontWeight:700,color:P.text,letterSpacing:"0.08em"}}>{deal.accessCode}</span>
+        <button onClick={()=>copy(deal.accessCode,"code")} style={btn}>{copied==="code"?"Copied ✓":"Copy"}</button>
+      </div>
+    </div>
+  </div>);
+};
+const lbl0={fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6};
+
 function DealRoom({prospectShareSlug}) {
   const [session,setSession]=useState(undefined); // undefined=checking, null=signed out, object=signed in
   const [needsOrgSetup,setNeedsOrgSetup]=useState(false);
@@ -612,6 +643,7 @@ function DealRoom({prospectShareSlug}) {
   const [aiLoading,setAiLoading]=useState(false);
   const [chatInput,setChatInput]=useState("");
   const [showCreator,setShowCreator]=useState(false);
+  const [showShare,setShowShare]=useState(false);
   const [showAddTask,setShowAddTask]=useState(false);
   const [newTask,setNewTask]=useState({phase:"Value Alignment",task:"",owner:"Mark H.",buyerOwner:"",dueDate:"",status:"pending",notes:"",approvalRequired:false});
   const [toast,setToast]=useState(null);
@@ -1031,6 +1063,7 @@ select option{background:#fff}
       </div>
     </div>}
     {showSettings&&<SettingsModal orgId={orgId} myUserId={session?.user?.id} myRole={myRole} onClose={()=>setShowSettings(false)}/>}
+    {showShare&&<ShareModal deal={deal} onClose={()=>setShowShare(false)}/>}
 
     {/* MAIN */}
     <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
@@ -1061,6 +1094,7 @@ select option{background:#fff}
             <span style={{fontSize:11,fontWeight:800,color:deal.engagement>60?P.green:P.amber}}>{deal.engagement}%</span>
           </div>
           {viewMode==="rep"&&<>
+            <button onClick={()=>setShowShare(true)} className="hv" style={{padding:"7px 14px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:11,fontWeight:700,cursor:"pointer",textTransform:"uppercase",letterSpacing:"0.04em"}}>↗ Share</button>
             <button onClick={()=>runAI("brief")} className="hv" style={{padding:"7px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer",textTransform:"uppercase",letterSpacing:"0.04em"}}>✦ Deal Brief</button>
             <button onClick={()=>{setAiOpen(!aiOpen);setAiText("");}} className="hv" style={{padding:"7px 14px",background:aiOpen?P.accentLight:P.bg,border:`1px solid ${aiOpen?P.accentMid:P.border}`,borderRadius:6,color:aiOpen?P.accent:P.textSec,fontSize:11,fontWeight:700,cursor:"pointer",textTransform:"uppercase",letterSpacing:"0.04em"}}>AI Coach</button>
           </>}
