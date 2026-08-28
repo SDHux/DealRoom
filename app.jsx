@@ -121,10 +121,11 @@ const P = {
 const AE = { name:"Mark Huckins", title:"Sr. Account Executive", company:"Salsify", email:"mark.huckins@gmail.com", phone:"+1-858-752-4321", linkedin:"https://linkedin.com/in/markhuckins", initials:"MH",
   photo:"https://media.licdn.com/dms/image/v2/D5603AQGEzOXSHDFOqA/profile-displayphoto-shrink_200_200/profile-displayphoto-shrink_200_200/0/1699997107933?e=2147483647&v=beta&t=IymYW4hFsxj3t0BKhS4a9B-HxCFjzjBm1V9_QNUcbAs" };
 
-const PHASES_ALL = ["Value Alignment","Trial Sessions","Business Case","Paper Process"];
-const PHASES_NO_TRIAL = ["Value Alignment","Business Case","Paper Process"];
+const PHASES_ALL = ["Value Alignment","Product Demo","Trial Sessions","Business Case","Paper Process"];
+const PHASES_NO_TRIAL = ["Value Alignment","Product Demo","Business Case","Paper Process"];
 const PHASE_CFG = {
   "Value Alignment":{color:P.accent,bg:P.accentLight,border:"#BFDBFE",dot:P.accentMid},
+  "Product Demo":{color:P.amber,bg:P.amberBg,border:P.amberBorder,dot:P.amber},
   "Trial Sessions":{color:P.teal,bg:P.tealBg,border:P.tealBorder,dot:P.teal},
   "Business Case":{color:P.purple,bg:P.purpleBg,border:P.purpleBorder,dot:P.purple},
   "Paper Process":{color:P.green,bg:P.greenBg,border:P.greenBorder,dot:P.green},
@@ -211,7 +212,7 @@ const ProcessTimeline = ({deal}) => {
   // Product Demo both draw from "Value Alignment"), and a handful of done tasks
   // concentrated in one early phase would otherwise make the whole journey look nearly
   // finished even though later phases have no tasks at all yet.
-  const stepPhase=s=>s.key==="eval"?"Trial Sessions":s.key==="decision"?"Business Case":s.key==="formalize"?"Paper Process":"Value Alignment";
+  const stepPhase=s=>s.key==="demo"?"Product Demo":s.key==="eval"?"Trial Sessions":s.key==="decision"?"Business Case":s.key==="formalize"?"Paper Process":"Value Alignment";
   let aIdx=0;
   while(aIdx<steps.length){
     const phTasks=items.filter(t=>t.phase===stepPhase(steps[aIdx]));

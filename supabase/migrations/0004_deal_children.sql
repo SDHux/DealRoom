@@ -66,7 +66,7 @@ create table deal_tasks (
   deal_id uuid not null,
   org_id uuid not null,
 
-  phase text not null check (phase in ('Value Alignment', 'Trial Sessions', 'Business Case', 'Paper Process')),
+  phase text not null check (phase in ('Value Alignment', 'Product Demo', 'Trial Sessions', 'Business Case', 'Paper Process')),
   task text not null,
   owner_name text,
   buyer_owner_label text,
