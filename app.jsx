@@ -207,23 +207,20 @@ const ProcessTimeline = ({deal}) => {
   const phases=deal.includeTrialSessions?PHASES_ALL:PHASES_NO_TRIAL;
   const items=deal.mapItems.filter(t=>phases.includes(t.phase));
 
-  // Track progress per underlying task phase, not as a raw % of all tasks across the
-  // whole deal -- there are 4 real phases but 5 narrative steps here (Alignment and
-  // Product Demo both draw from "Value Alignment"), and a handful of done tasks
-  // concentrated in one early phase would otherwise make the whole journey look nearly
-  // finished even though later phases have no tasks at all yet.
+  // Score each step from its own underlying task phase independently -- not a raw % of
+  // all tasks across the whole deal (that made unrelated later phases look done from a
+  // few early completions), and not a strict left-to-right walk either (that failed to
+  // show any progress at all when a rep works a later phase, like Product Demo, before
+  // an earlier one has any tasks -- a real deal doesn't always fill in phases in order).
   const stepPhase=s=>s.key==="demo"?"Product Demo":s.key==="eval"?"Trial Sessions":s.key==="decision"?"Business Case":s.key==="formalize"?"Paper Process":"Value Alignment";
-  let aIdx=0;
-  while(aIdx<steps.length){
-    const phTasks=items.filter(t=>t.phase===stepPhase(steps[aIdx]));
-    if(phTasks.length===0||!phTasks.every(t=>t.status==="complete"))break;
-    aIdx++;
-  }
-  const allDone=aIdx>=steps.length;
-  const curPhaseTasks=allDone?[]:items.filter(t=>t.phase===stepPhase(steps[aIdx]));
-  const hasIP=curPhaseTasks.some(t=>t.status==="in-progress"||t.status==="complete");
-  const clampedIdx=Math.min(aIdx,steps.length-1);
-  const progW=steps.length>1?Math.min(clampedIdx/(steps.length-1)*86,86):0;
+  const phaseStatuses=steps.map(s=>{
+    const phTasks=items.filter(t=>t.phase===stepPhase(s));
+    if(phTasks.length===0)return "pending";
+    return phTasks.every(t=>t.status==="complete")?"complete":"active";
+  });
+  let anchorIdx=-1;
+  phaseStatuses.forEach((st,i)=>{if(st!=="pending")anchorIdx=i;});
+  const progW=anchorIdx<0?0:(steps.length>1?Math.min(anchorIdx/(steps.length-1)*86,86):0);
   return (
     <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:14,padding:"28px 36px",marginBottom:24}}>
       <div style={{fontSize:13,fontWeight:600,color:P.textSec,marginBottom:28}}>Track where we are in the process at any given time</div>
@@ -231,7 +228,7 @@ const ProcessTimeline = ({deal}) => {
         <div style={{position:"absolute",top:20,left:"7%",right:"7%",height:2,background:P.border,zIndex:0}}/>
         <div style={{position:"absolute",top:20,left:"7%",height:2,width:`${progW}%`,background:`linear-gradient(90deg,${P.teal},${P.accentMid})`,zIndex:1,transition:"width .6s ease"}}/>
         {steps.map((step,i)=>{
-          const isCom=i<aIdx,isAct=i===aIdx&&hasIP&&!allDone,isUp=!isCom&&!isAct;
+          const isCom=phaseStatuses[i]==="complete",isAct=phaseStatuses[i]==="active",isUp=!isCom&&!isAct;
           return (<div key={step.key} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",position:"relative",zIndex:2}}>
             <div style={{width:42,height:42,borderRadius:"50%",background:isCom?P.teal:isAct?P.accentMid:"#E5E7EB",border:`3px solid ${isCom?P.teal:isAct?P.accent:P.border}`,display:"flex",alignItems:"center",justifyContent:"center",boxShadow:isAct?`0 0 0 8px ${P.accentLight},0 0 0 4px ${P.accentMid}30`:"none"}}>
               {isCom?<span style={{color:"#fff",fontSize:14,fontWeight:800}}>✓</span>:isAct?<div style={{width:12,height:12,borderRadius:"50%",background:"#fff"}}/>:<div style={{width:8,height:8,borderRadius:"50%",background:P.textMute}}/>}
