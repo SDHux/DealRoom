@@ -1,4 +1,100 @@
-const { useState } = React;
+const { useState, useEffect } = React;
+
+// Supabase project config. The anon/publishable key is safe to embed client-side --
+// protected by RLS, not secrecy -- same as any other public constant in this file.
+const SUPABASE_URL = "https://hjumgvnuqvmxdusldeba.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_gRA_qf4uQVX9BKhJHuV6hQ_oMRTypV3";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// A prospect reaches one deal via an unguessable link (/d/{share_slug}), never a picker.
+// No router library -- read the path once at load, same as any other module constant.
+const PROSPECT_ROUTE = (() => {
+  const m = window.location.pathname.match(/^\/d\/([^/]+)\/?$/);
+  return m ? m[1] : null;
+})();
+
+const initialsOf = name => (name || "").split(" ").filter(Boolean).map(w => w[0]).join("").toUpperCase().slice(0, 2);
+const relTime = iso => {
+  if (!iso) return "—";
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+};
+const shortDate = iso => iso ? new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "";
+const fmtCurrency = (amount, currency) => new Intl.NumberFormat("en-US", { style: "currency", currency: currency || "USD", maximumFractionDigits: 0 }).format(amount || 0);
+const fmtDuration = secs => {
+  if (!secs && secs !== 0) return "";
+  const m = Math.floor(secs / 60), s = secs % 60;
+  return `${m}:${String(s).padStart(2, "0")} min`;
+};
+
+// Transforms a Supabase `deals` row (with nested stakeholders/deal_tasks/documents from a
+// PostgREST embed, or the equivalent shape from the get_deal_for_prospect RPC) into the
+// exact camelCase shape the render tree below already expects. Keeping this as one pure
+// function at the loading boundary means the ~700 lines of existing render code below
+// don't need to change at all for the new column names.
+function mapDealFromDb(row) {
+  return {
+    id: row.id,
+    orgId: row.org_id,
+    company: row.company_name,
+    contact: row.primary_contact_name,
+    title: row.title,
+    stage: row.stage,
+    value: fmtCurrency(row.value_amount, row.currency),
+    closeDate: row.close_date,
+    logo: row.logo_initials,
+    color: row.brand_color,
+    industry: row.industry,
+    engagement: row.engagement_score,
+    accessCode: row.access_code,
+    shareSlug: row.share_slug,
+    includeTrialSessions: row.include_trial_sessions,
+    welcomeMsg: row.welcome_message,
+    execSummary: row.exec_summary || {},
+    discovery: row.discovery || {},
+    stakeholders: (row.stakeholders || []).map(s => ({
+      id: s.id,
+      name: s.name,
+      role: s.role_title,
+      designation: s.designation,
+      engagement: s.engagement_score,
+      lastSeen: relTime(s.last_seen_at),
+      initials: initialsOf(s.name),
+      bu: s.business_unit,
+      approvalRequired: s.approval_required,
+      docsViewed: [],
+      linkedin: s.linkedin_url,
+      reportsTo: s.reports_to,
+    })),
+    mapItems: (row.deal_tasks || []).slice().sort((a, b) => a.sort_order - b.sort_order).map(t => ({
+      id: t.id,
+      phase: t.phase,
+      task: t.task,
+      owner: t.owner_name,
+      buyerOwner: t.buyer_owner_label,
+      dueDate: t.due_date,
+      status: t.status,
+      notes: t.notes,
+      approvalRequired: t.approval_required,
+    })),
+    content: (row.documents || []).map(d => ({
+      id: d.id,
+      title: d.title,
+      type: d.file_type,
+      uploaded: shortDate(d.created_at),
+      category: d.category,
+      url: d.storage_url || "#",
+      views: 0,
+      viewers: [],
+      lastViewed: "Not yet viewed",
+    })),
+    activityLog: [],
+  };
+}
 
 const API = "/api/ai-coach";
 const callClaude = async (sys, usr, max = 1400) => {
@@ -43,145 +139,6 @@ const DESIG_CFG = {
 };
 const FILE_ICON = {pptx:{icon:"▤",c:"#C55A11"},xlsx:{icon:"⊞",c:"#1D6F42"},pdf:{icon:"▪",c:"#C00000"},docx:{icon:"≡",c:"#2B579A"},link:{icon:"⌘",c:"#6366F1"}};
 
-const INIT_DEALS = [
-{id:1,company:"Kraft Heinz",contact:"Jennifer Mills",title:"Digital Commerce PXM Platform",stage:"Evaluation",value:"$340,000",closeDate:"2026-05-30",logo:"KH",color:"#C8102E",industry:"CPG · Food & Beverage",engagement:74,accessCode:"KH2026",includeTrialSessions:true,
-welcomeMsg:"Welcome to your dedicated deal workspace with Salsify. This collaborative portal gives your team a single source of truth — track our shared milestones, review all shared materials, and stay aligned throughout your evaluation.",
-execSummary:{
-  problem:"Kraft Heinz is strategically scaling its digital commerce operations globally, but the team is struggling to manage product content consistently across 25+ retail endpoints. Win rates on digital shelf are declining as PDPs fall out of compliance, Buy Box share is eroding, and time-to-market for new product launches averages 6–8 weeks — 3x the industry benchmark.\n\nThe current workflow relies on spreadsheets, shared drives, and manual portal uploads, resulting in inconsistent content, significant FTE overhead, and no centralized visibility into digital shelf performance.",
-  challenges:["No centralized PIM — content managed in fragmented spreadsheets and siloed systems","Data inaccuracies across 12+ retailer portals leading to lost Buy Box and content violations","New product launches take 6–8 weeks vs. 2-week industry benchmark","Syndication to Walmart, Kroger, and Amazon is manual and error-prone","Zero real-time visibility into digital shelf performance across the portfolio"],
-  solutions:["Centralize all product content and digital assets in a single PXM platform with role-based access","Automate syndication to 25+ retail endpoints with retailer-specific content transformation","Reduce time-to-market from 6–8 weeks to under 2 weeks through configurable workflow automation","Enable real-time digital shelf analytics — Buy Box monitoring, content compliance, PDP health","Empower the champion team with a self-service content operations model that scales with growth"],
-},
-discovery:{
-  summary:"Kraft Heinz is a global CPG leader managing 8,000+ SKUs across 25 retail channels. The organization is investing heavily in digital commerce growth but is held back by fragmented content operations, manual syndication workflows, and lack of real-time shelf visibility. A centralized PXM solution directly addresses their top 3 board-level priorities: accelerate eCommerce revenue growth, reduce operational costs, and improve brand integrity at shelf.",
-  corporateStrategy:["Strengthen and accelerate rapid growth globally across all digital channels","Drive 20% CAGR in eCommerce net sales by 2027","Create authentic brand experiences with devoted consumers","Invest in adjacent segments — private label and D2C expansion"],
-  topOutcomes:["Grow digital shelf revenue by $120M in organic eCommerce sales","Eliminate 90% of non-value-added FTE time spent on manual content tasks","Achieve 100% GS1-compliant data syndication to all tier-1 retailers"],
-  challenges:["No centralized repository for product content and digital assets","Data is inaccurate and inconsistent across 12+ retail portals","Cannot react fast enough to changing Buy Box winners and pricing algorithms","Syndication to priority retailers is manual and error-prone","New product introductions take 6–8 weeks vs. 2-week industry benchmark"],
-  jobsToBeDone:["Guard the Buy Box — Defend profitability at top retailers","Protect Content — Keep PDPs accurate and brand-consistent","Centralize data to discover optimization opportunities","Automate syndication to reduce FTE dependency"],
-  primaryUseCase:"Deliver compelling product experiences across the entire retail ecosystem. With a centralized PXM platform, Kraft Heinz teams can collaborate to manage product information and assets, distribute to 25+ retail endpoints, and gain real-time insight into digital shelf performance.",
-  goals:{"90 Days":["Centralize all digital assets into one system","Publish top 500 SKUs to Amazon"],"1 Year":["100% of 8,000 SKUs syndicating to tier-1 retailers","Brand consistency across all retail PDPs"],"Beyond":["Improve eCommerce conversion by 2.5%","Launch D2C storefront powered by content hub"]},
-},
-stakeholders:[
-  {id:"s1",name:"Jennifer Mills",role:"VP Digital Commerce",designation:"champion",engagement:88,lastSeen:"3h ago",initials:"JM",bu:"Digital Commerce",approvalRequired:true,docsViewed:["Executive Discovery Deck","BOVI Document","ROI Calculator"],linkedin:"https://linkedin.com/in/jennifermills",reportsTo:null},
-  {id:"s2",name:"Robert Kasey",role:"Chief Digital Officer",designation:"decision-maker",engagement:41,lastSeen:"2d ago",initials:"RK",bu:"Executive",approvalRequired:true,docsViewed:["BOVI Document"],linkedin:"https://linkedin.com/in/robertkasey",reportsTo:null},
-  {id:"s3",name:"Anna Patel",role:"Director of eCommerce",designation:"influencer",engagement:62,lastSeen:"1d ago",initials:"AP",bu:"eCommerce",approvalRequired:false,docsViewed:["Executive Discovery Deck","Security Overview"],linkedin:"https://linkedin.com/in/annapatel",reportsTo:"s1"},
-  {id:"s4",name:"Tom Briggs",role:"VP IT / Security",designation:"blocker",engagement:18,lastSeen:"6d ago",initials:"TB",bu:"Technology",approvalRequired:true,docsViewed:["Security Overview"],linkedin:"https://linkedin.com/in/tombriggs",reportsTo:"s2"},
-],
-mapItems:[
-  {id:1,phase:"Value Alignment",task:"Initial Discovery Meeting",owner:"Mark H.",buyerOwner:"Jennifer Mills",dueDate:"2026-02-10",status:"complete",notes:"Confirmed 3 core pain points",approvalRequired:false},
-  {id:2,phase:"Value Alignment",task:"BOVI / Deep Discovery Document",owner:"Mark H.",buyerOwner:"Jennifer Mills",dueDate:"2026-02-20",status:"complete",notes:"Submitted and reviewed — outcomes confirmed",approvalRequired:false},
-  {id:3,phase:"Value Alignment",task:"Custom Day-in-the-Life Demo",owner:"Mark H.",buyerOwner:"Jennifer Mills + Anna Patel",dueDate:"2026-03-05",status:"in-progress",notes:"Demo around Kraft Heinz Walmart syndication workflow",approvalRequired:false},
-  {id:4,phase:"Value Alignment",task:"Deep Dive Technical Demo",owner:"SE Team",buyerOwner:"Anna Patel + Tom Briggs",dueDate:"2026-03-12",status:"pending",notes:"",approvalRequired:false},
-  {id:5,phase:"Trial Sessions",task:"Technical Environment Setup",owner:"SE Team",buyerOwner:"Tom Briggs",dueDate:"2026-03-15",status:"pending",notes:"",approvalRequired:true},
-  {id:6,phase:"Trial Sessions",task:"Champion Team Training",owner:"Mark H.",buyerOwner:"Jennifer Mills",dueDate:"2026-03-18",status:"pending",notes:"",approvalRequired:false},
-  {id:7,phase:"Trial Sessions",task:"Mid-Point Trial Check-In",owner:"Mark H.",buyerOwner:"Jennifer Mills + Anna Patel",dueDate:"2026-03-25",status:"pending",notes:"",approvalRequired:false},
-  {id:8,phase:"Trial Sessions",task:"Present Trial Findings & ROI",owner:"Mark H.",buyerOwner:"Jennifer Mills",dueDate:"2026-04-02",status:"pending",notes:"",approvalRequired:true},
-  {id:9,phase:"Business Case",task:"Executive Sponsor Presentation",owner:"Mark H.",buyerOwner:"Robert Kasey",dueDate:"2026-04-10",status:"pending",notes:"CDO needs As-Is → To-Be + ROI model",approvalRequired:true},
-  {id:10,phase:"Business Case",task:"ROI Model & Cost-Benefit Sign-Off",owner:"Mark H.",buyerOwner:"Jennifer Mills",dueDate:"2026-04-18",status:"pending",notes:"",approvalRequired:true},
-  {id:11,phase:"Paper Process",task:"Security Review Package",owner:"SE Team",buyerOwner:"Tom Briggs",dueDate:"2026-04-25",status:"pending",notes:"",approvalRequired:true},
-  {id:12,phase:"Paper Process",task:"Legal / Procurement Review",owner:"Legal",buyerOwner:"Tom Briggs",dueDate:"2026-05-05",status:"pending",notes:"",approvalRequired:true},
-  {id:13,phase:"Paper Process",task:"Contract Execution",owner:"Mark H.",buyerOwner:"Robert Kasey",dueDate:"2026-05-30",status:"pending",notes:"",approvalRequired:true},
-],
-content:[
-  {id:1,title:"Executive Discovery Deck — Kraft Heinz",type:"pptx",uploaded:"Feb 10",views:5,viewers:["Jennifer Mills","Anna Patel"],lastViewed:"Jennifer Mills · 3h ago",url:"#",category:"Presentation"},
-  {id:2,title:"BOVI / Business Outcomes Document",type:"docx",uploaded:"Feb 20",views:3,viewers:["Jennifer Mills","Robert Kasey"],lastViewed:"Robert Kasey · 2d ago",url:"#",category:"Discovery"},
-  {id:3,title:"PXM ROI Calculator (CPG Benchmark)",type:"xlsx",uploaded:"Feb 24",views:2,viewers:["Jennifer Mills"],lastViewed:"Jennifer Mills · 1d ago",url:"#",category:"ROI"},
-  {id:4,title:"Security & Compliance Overview",type:"pdf",uploaded:"Feb 26",views:1,viewers:["Tom Briggs"],lastViewed:"Tom Briggs · 6d ago",url:"#",category:"Security"},
-  {id:5,title:"Salsify CPG Customer Case Studies",type:"pdf",uploaded:"Mar 1",views:0,viewers:[],lastViewed:"Not yet viewed",url:"#",category:"Case Study"},
-],
-activityLog:[
-  {date:"Mar 2, 2026",entries:[
-    {person:"Jennifer Mills",email:"j.mills@kraftheinz.com",location:"Chicago, US",time:"10:14am",duration:"24:00 min",actions:[{type:"viewed",item:"Executive Discovery Deck",time:"10:14am"},{type:"viewed",item:"ROI Calculator",time:"10:31am"}]},
-    {person:"Anna Patel",email:"a.patel@kraftheinz.com",location:"Chicago, US",time:"11:02am",duration:"16:43 min",actions:[{type:"viewed",item:"Security Overview",time:"11:05am"}]},
-  ]},
-  {date:"Feb 28, 2026",entries:[
-    {person:"Robert Kasey",email:"r.kasey@kraftheinz.com",location:"Pittsburgh, US",time:"2:30pm",duration:"12:23 min",actions:[{type:"viewed",item:"BOVI Document",time:"2:31pm"}]},
-  ]},
-]},
-{id:2,company:"Church & Dwight",contact:"Michael Torres",title:"PIM + Digital Shelf Analytics",stage:"Discovery",value:"$215,000",closeDate:"2026-06-15",logo:"C&D",color:"#00539B",industry:"CPG · Personal Care",engagement:45,accessCode:"CD2026",includeTrialSessions:false,
-welcomeMsg:"Welcome to your Church & Dwight deal workspace. This portal centralizes everything related to your PIM and Digital Shelf evaluation.",
-execSummary:{
-  problem:"Church & Dwight manages 3,000+ SKUs across major retail platforms but lacks the centralized infrastructure to maintain PDP accuracy, monitor Buy Box performance, or respond quickly to unauthorized 3P seller activity. Manual processes are creating compliance risks and slowing launch timelines.",
-  challenges:["Manual PDP monitoring not scalable across 3,000 SKUs","Unauthorized 3P sellers eroding brand pricing and content quality","No real-time visibility into Buy Box win rate by SKU","Data scattered across brand.com, retailer portals, and agency systems"],
-  solutions:["Centralized PIM to unify all product content and digital assets","Automated Buy Box monitoring with real-time alerts","Retailer content compliance scoring dashboard","Unauthorized seller detection and reporting workflows"],
-},
-discovery:{
-  summary:"Church & Dwight is a fast-growing CPG brand in the personal care space, managing a complex multi-channel digital presence without the infrastructure to match its ambition. The core opportunity is to replace manual, fragmented content operations with a scalable PIM platform.",
-  corporateStrategy:["Expand eCommerce presence to capture $500M in digital revenue","Maintain brand integrity across all 3P seller channels","Reduce time-to-market for product launches by 40%"],
-  topOutcomes:["Drive 25% CAGR in Amazon and Walmart.com net sales","Eliminate manual PDP monitoring — cut FTE time by 70%","Ensure brand content accuracy across 15 major retail portals"],
-  challenges:["Manual monitoring of PDPs not scalable across 3,000 SKUs","Unauthorized 3P sellers eroding brand pricing and content quality","No real-time visibility into Buy Box win rate by SKU"],
-  jobsToBeDone:["Monitor and defend Buy Box at scale","Automate retailer content compliance checks","Centralize content for faster new product launches"],
-  primaryUseCase:"Centralize product information and digital assets to power consistent, accurate content across all retail endpoints while gaining real-time analytics on digital shelf performance.",
-  goals:{"90 Days":["Audit and correct top 500 SKUs on Amazon","Implement Buy Box monitoring"],"1 Year":["Full PIM rollout across all 3,000 SKUs","Automated syndication to 15 retail partners"],"Beyond":["Real-time pricing intelligence","Predictive content optimization"]},
-},
-stakeholders:[
-  {id:"s1",name:"Michael Torres",role:"Sr. Director eCommerce",designation:"champion",engagement:71,lastSeen:"1d ago",initials:"MT",bu:"eCommerce",approvalRequired:true,docsViewed:["Company Overview"],linkedin:"https://linkedin.com/in/michaeltorres",reportsTo:null},
-  {id:"s2",name:"Lisa Huang",role:"VP Marketing",designation:"influencer",engagement:28,lastSeen:"4d ago",initials:"LH",bu:"Marketing",approvalRequired:false,docsViewed:[],linkedin:"https://linkedin.com/in/lisahuang",reportsTo:"s1"},
-],
-mapItems:[
-  {id:1,phase:"Value Alignment",task:"Initial Discovery Meeting",owner:"Mark H.",buyerOwner:"Michael Torres",dueDate:"2026-02-25",status:"complete",notes:"",approvalRequired:false},
-  {id:2,phase:"Value Alignment",task:"BOVI Discovery Document",owner:"Mark H.",buyerOwner:"Michael Torres",dueDate:"2026-03-10",status:"in-progress",notes:"",approvalRequired:false},
-  {id:3,phase:"Value Alignment",task:"Custom Demo",owner:"Mark H.",buyerOwner:"Michael Torres + Lisa Huang",dueDate:"2026-03-25",status:"pending",notes:"",approvalRequired:false},
-],
-content:[
-  {id:1,title:"Company Overview & Capabilities Deck",type:"pptx",uploaded:"Feb 25",views:2,viewers:["Michael Torres"],lastViewed:"Michael Torres · 1d ago",url:"#",category:"Presentation"},
-],
-activityLog:[
-  {date:"Mar 1, 2026",entries:[
-    {person:"Michael Torres",email:"m.torres@churchdwight.com",location:"Ewing, US",time:"9:45am",duration:"18:30 min",actions:[{type:"viewed",item:"Company Overview & Capabilities Deck",time:"9:46am"}]},
-  ]},
-]},
-{"id":3,"company":"Reckitt","contact":"Sarah Chen","title":"AI Consumer Intelligence Platform — Enterprise Rollout","stage":"Discovery","value":285000,"closeDate":"2026-09-30","logo":"RE","color":"#1A56DB","industry":"CPG · Health & Personal Care","engagement":50,"accessCode":"RE2026","includeTrialSessions":true,"welcomeMsg":"Sarah, welcome to your dedicated Revuze deal room. Everything you need to evaluate and build the business case is here — from our discovery summary to the mutual close plan. We’re excited to show you how Revuze transforms consumer signals into competitive advantage.","execSummary":{"problem":"Reckitt is a global CPG powerhouse with 200+ power brands across Health, Hygiene, and Nutrition — yet its Consumer Insights function is operating with a significant blind spot. The team currently relies on quarterly syndicated research, manual social listening exports, and fragmented agency reports to understand consumer sentiment, competitive positioning, and category trends. By the time insights reach brand teams, they are 4–8 weeks stale, misaligned across markets, and lack the granularity needed to drive real-time product and marketing decisions.","challenges":["No centralized AI consumer intelligence layer — insights fragmented across 6+ vendors with no single source of truth","Review analytics limited to manually curated snapshots — no real-time competitive sentiment monitoring across 12+ retailers","Innovation cycles averaging 18+ months due to slow consumer feedback loops — voice-of-customer not integrated into stage-gate","Share of voice and sentiment benchmarking done manually — consuming 30+ FTE hours per week per category","No cross-category, cross-market signal aggregation — Lysol, Durex, Dettol, Nurofen teams running siloed research","Critical executive decisions made without AI-powered predictive intelligence"],"solutions":["Deploy Revuze’s AI Consumer Intelligence Platform across 5 priority categories: Surface Care, Sexual Wellness, Personal Hygiene, Pain Relief, and Infant Nutrition","Enable real-time ActionHub dashboards — live sentiment, share of voice, competitive review tracking across Amazon, Walmart, Target, and DTC","Integrate AI-powered insight extraction into Reckitt’s stage-gate innovation process — compress consumer feedback loop from 18 months to under 60 days","Automate weekly competitive intelligence reports: eliminate 30+ analyst hours/week","Build a global consumer intelligence layer across US, UK, Germany, India, and Australia","Expand to 12+ ActionHubs in Year 2 — locking in a 3-year strategic partnership"]},"discovery":{"summary":"Reckitt is a Fortune 100 CPG company with $15B+ in annual revenue and 200+ global brands across Health, Hygiene, and Nutrition. The Consumer Insights team, led by Sarah Chen (VP Consumer Insights), informs brand strategy, innovation pipeline prioritization, and go-to-market decisions across 5 key business units. Despite a $12M+ annual research budget, the team lacks real-time AI-powered consumer intelligence — creating critical gaps in competitive awareness, innovation speed, and consumer-led decision making.","corporateStrategy":["Drive 4–7% organic growth annually across all business units by 2027","Accelerate innovation velocity — target 30% reduction in time-to-market for new product launches","Strengthen digital and e-commerce capabilities across 60+ markets","Improve consumer-centricity at every stage of the product lifecycle","Achieve $1.5B in efficiency savings through operational excellence programs"],"topOutcomes":["Reduce consumer insight cycle time from 18 months to under 60 days — enabling real-time innovation decisions","Eliminate $3.8M in annual redundant research spend by consolidating fragmented vendor ecosystem","Capture projected $4.2M in incremental revenue through faster, consumer-informed product launches"],"challenges":["No AI-powered real-time consumer intelligence layer — teams rely on quarterly syndicated reports","Share of voice and competitive sentiment tracked manually — 30+ FTE hours/week per category","Innovation pipeline not connected to live consumer signals — stage-gate process runs on stale data","6+ research vendors with no unified platform — insight quality inconsistent across markets","Brand teams in different BUs using different tools — no cross-portfolio consumer intelligence"],"jobsToBeDone":["Monitor real-time consumer sentiment across Lysol, Durex, Dettol, Nurofen, and Enfamil categories","Track competitive brand and SKU performance across Amazon, Walmart, Target, and DTC channels","Surface emerging consumer trends and unmet needs to fuel innovation pipeline","Quantify share of voice and sentiment shifts to inform marketing investment decisions"],"primaryUseCase":"Deploy AI-powered ActionHub dashboards for 5 priority brand categories, enabling real-time consumer intelligence that drives innovation, competitive response, and marketing optimization across Reckitt’s global portfolio.","goals":{"90 Days":["Live ActionHub dashboards for Lysol, Durex, and Dettol categories","Automated weekly competitive sentiment reports replacing manual analyst work","Full team onboarding — Consumer Insights + 2 brand teams trained and active"],"1 Year":["5 ActionHubs live across all priority categories with real-time competitive tracking","3 new product innovations launched with Revuze AI insights informing stage-gate decisions","80% reduction in manual research effort — team redirected to strategic analysis"],"Beyond":["Expand to 12+ ActionHubs across full brand portfolio with preferred Y2 pricing","Global deployment across US, UK, Germany, India, and Australia markets","Revuze embedded as core intelligence layer in Reckitt’s innovation operating model"]}},"stakeholders":[{"id":"s1","name":"Sarah Chen","role":"VP Consumer Insights","designation":"champion","engagement":82,"lastSeen":"2h ago","initials":"SC","bu":"Consumer Insights","approvalRequired":true,"docsViewed":["Executive Discovery Deck","BOVI Document","ROI Model"],"linkedin":"https://linkedin.com/in/sarahchen","reportsTo":"s2"},{"id":"s2","name":"David Park","role":"Chief Digital Officer","designation":"decision-maker","engagement":38,"lastSeen":"3d ago","initials":"DP","bu":"Executive","approvalRequired":true,"docsViewed":["Executive Summary"],"linkedin":"https://linkedin.com/in/davidpark","reportsTo":null},{"id":"s3","name":"Marcus Webb","role":"Director of Consumer Analytics","designation":"influencer","engagement":71,"lastSeen":"1d ago","initials":"MW","bu":"Consumer Insights","approvalRequired":false,"docsViewed":["Executive Discovery Deck","Pilot Methodology"],"linkedin":"https://linkedin.com/in/marcuswebb","reportsTo":"s1"},{"id":"s4","name":"Nina Russo","role":"Chief Product Officer","designation":"influencer","engagement":45,"lastSeen":"5d ago","initials":"NR","bu":"Product","approvalRequired":true,"docsViewed":["ROI Model"],"linkedin":"https://linkedin.com/in/ninarusso","reportsTo":"s2"},{"id":"s5","name":"James Liu","role":"VP IT & Security","designation":"blocker","engagement":22,"lastSeen":"7d ago","initials":"JL","bu":"Technology","approvalRequired":true,"docsViewed":["Security Overview"],"linkedin":"https://linkedin.com/in/jamesliu","reportsTo":"s2"}],"mapItems":[{"id":1,"phase":"Value Alignment","task":"Initial Discovery Meeting","owner":"Mark H.","buyerOwner":"Sarah Chen","dueDate":"2026-06-20","status":"complete","notes":"Confirmed pain hierarchy: (1) real-time intelligence gaps, (2) manual research overhead, (3) innovation cycle speed. Mapped stakeholder landscape.","approvalRequired":false},{"id":2,"phase":"Value Alignment","task":"BOVI / Deep Discovery Document","owner":"Mark H.","buyerOwner":"Sarah Chen","dueDate":"2026-06-27","status":"complete","notes":"Buyer-owned validation: confirmed 3 priority use cases, data source access, team scope, and executive sponsor path to David Park","approvalRequired":false},{"id":3,"phase":"Value Alignment","task":"Custom Day-in-the-Life Demo","owner":"Mark H.","buyerOwner":"Sarah Chen + Marcus Webb","dueDate":"2026-07-10","status":"in-progress","notes":"Live demo: Lysol vs. Mr. Clean sentiment comparison on Amazon + Walmart. Durex review trend analysis across 3 markets.","approvalRequired":false},{"id":4,"phase":"Value Alignment","task":"Executive Intro: CDO + Chief Product Officer","owner":"Mark H.","buyerOwner":"Sarah Chen + David Park","dueDate":"2026-07-17","status":"pending","notes":"Multi-thread to economic buyer (David Park, CDO). Present board-level strategic alignment deck with innovation velocity ROI.","approvalRequired":true},{"id":5,"phase":"Trial Sessions","task":"Technical Environment & Integrations Scoping","owner":"SE Team","buyerOwner":"James Liu (VP IT)","dueDate":"2026-07-24","status":"pending","notes":"Confirm API access, review data pipeline architecture, assess security/compliance posture (SOC 2 Type II, GDPR)","approvalRequired":true},{"id":6,"phase":"Trial Sessions","task":"Champion Team Onboarding & Training","owner":"Mark H.","buyerOwner":"Sarah Chen + Team (4)","dueDate":"2026-08-01","status":"pending","notes":"2-hour hands-on: ActionHub setup, Lysol/Durex brand configuration, competitor tracking, smart alert configuration","approvalRequired":false},{"id":7,"phase":"Trial Sessions","task":"Mid-Pilot Check-In & Value Assessment","owner":"Mark H.","buyerOwner":"Sarah Chen + Marcus Webb","dueDate":"2026-08-15","status":"pending","notes":"Review pilot KPIs: # insights actioned, time saved vs. manual research, recommendation quality score vs. agency benchmarks","approvalRequired":false},{"id":8,"phase":"Trial Sessions","task":"Pilot Findings & ROI Quantification Presentation","owner":"Mark H.","buyerOwner":"Sarah Chen","dueDate":"2026-08-22","status":"pending","notes":"ROI model: projected $4.2M value (innovation speed, share of voice gains, $3.8M research cost consolidation)","approvalRequired":true},{"id":9,"phase":"Business Case","task":"Executive Sponsor Presentation (CDO + CPO)","owner":"Mark H.","buyerOwner":"David Park + Nina Russo","dueDate":"2026-09-04","status":"pending","notes":"As-Is vs. To-Be workflow, competitive intelligence gap analysis, 3-year ROI scenario with expansion path to 12 ActionHubs in Y2","approvalRequired":true},{"id":10,"phase":"Business Case","task":"Procurement & Commercial Terms Review","owner":"Mark H.","buyerOwner":"James Liu + Procurement","dueDate":"2026-09-10","status":"pending","notes":"$285K Year 1 (5 ActionHubs) → $485K Year 2 (12 ActionHubs). Volume discount applied. DPA and MSA pre-agreed terms ready.","approvalRequired":false},{"id":11,"phase":"Business Case","task":"ROI Model & Business Case Sign-Off","owner":"Mark H.","buyerOwner":"Sarah Chen + David Park","dueDate":"2026-09-15","status":"pending","notes":"Final business case approval with CFO endorsement. Confirm expansion path: 5 ActionHubs Y1 → 12 ActionHubs Y2.","approvalRequired":true},{"id":12,"phase":"Paper Process","task":"Security & Compliance Review Package","owner":"SE Team","buyerOwner":"James Liu (CISO/IT)","dueDate":"2026-09-18","status":"pending","notes":"SOC 2 Type II docs, GDPR Data Processing Agreement, penetration test results, EU data residency options","approvalRequired":true},{"id":13,"phase":"Paper Process","task":"Legal & Procurement Review","owner":"Legal","buyerOwner":"Reckitt Procurement + Legal","dueDate":"2026-09-24","status":"pending","notes":"MSA + DPA 2-week review cycle. Red lines pre-negotiated: data ownership, IP, SLA (99.9% uptime), termination provisions","approvalRequired":false},{"id":14,"phase":"Paper Process","task":"Contract Execution & Implementation Kickoff","owner":"Mark H.","buyerOwner":"David Park (signing authority)","dueDate":"2026-09-30","status":"pending","notes":"Execute order form. Schedule 30-day implementation kickoff with Revuze CS. Configure all 5 ActionHubs in Week 1.","approvalRequired":true}],"content":[{"id":1,"title":"Executive Discovery Deck — Reckitt","type":"pptx","uploaded":"Jun 20","views":3,"viewers":["Sarah Chen","Marcus Webb"],"lastViewed":"Sarah Chen · 2h ago","url":"#","category":"Presentation"},{"id":2,"title":"BOVI / Business Outcomes & Value Identification","type":"docx","uploaded":"Jun 27","views":2,"viewers":["Sarah Chen"],"lastViewed":"Sarah Chen · 1d ago","url":"#","category":"Discovery"},{"id":3,"title":"Revuze ROI Model — CPG Consumer Intelligence","type":"xlsx","uploaded":"Jul 1","views":1,"viewers":["Sarah Chen"],"lastViewed":"Sarah Chen · 3d ago","url":"#","category":"ROI"},{"id":4,"title":"Pilot Methodology & Success Criteria","type":"pdf","uploaded":"Jul 5","views":1,"viewers":["Marcus Webb"],"lastViewed":"Marcus Webb · 1d ago","url":"#","category":"Discovery"},{"id":5,"title":"Security & Compliance Overview (SOC 2, GDPR)","type":"pdf","uploaded":"Jul 8","views":0,"viewers":[],"lastViewed":"Not yet viewed","url":"#","category":"Security"},{"id":6,"title":"CPG Consumer Intelligence — Similar Win Case Study","type":"pdf","uploaded":"Jul 10","views":0,"viewers":[],"lastViewed":"Not yet viewed","url":"#","category":"Case Study"}],"activityLog":[{"date":"Jun 27, 2026","entries":[{"person":"Sarah Chen","email":"s.chen@reckitt.com","location":"London, UK","time":"9:32am","duration":"18:45 min","actions":[{"type":"viewed","item":"BOVI / Business Outcomes & Value Identification","time":"9:32am"},{"type":"viewed","item":"Revuze ROI Model — CPG Consumer Intelligence","time":"9:47am"}]}]},{"date":"Jun 20, 2026","entries":[{"person":"Sarah Chen","email":"s.chen@reckitt.com","location":"London, UK","time":"2:15pm","duration":"24:00 min","actions":[{"type":"viewed","item":"Executive Discovery Deck — Reckitt","time":"2:15pm"}]},{"person":"Marcus Webb","email":"m.webb@reckitt.com","location":"London, UK","time":"4:02pm","duration":"12:20 min","actions":[{"type":"viewed","item":"Executive Discovery Deck — Reckitt","time":"4:03pm"}]}]}]},
-{id:4,company:"Walmart",contact:"Mark Ellison",title:"GDSN, Data Source & Power Reviews UGC: Strategic Partnership Renewal",stage:"Closed Won",value:"$534,954",closeDate:"2026-06-01",logo:"WMT",color:"#0071CE",industry:"Retail · Product Data & GDSN",engagement:96,accessCode:"WMT2026",includeTrialSessions:false,
-welcomeMsg:"Mark, welcome to your dedicated 1WorldSync deal room. Everything you need is here, from the license architecture to the onsite workshop series we're building together to shape what's next for Walmart's data partnership.",
-execSummary:{
-  problem:"Walmart's Bentonville team was informally evaluating supplier data provider consolidation. No formal RFP existed, but 1WorldSync sat alongside Syndigo, Etilize/GfK, Rithum, and Salsify as overlapping incumbents delivering product data, GDSN, and enriched content services. GDSN licensing ran on an annual term while Data Source licensing followed its own separate schedule, so the account carried four staggered renewal dates that created ongoing re-negotiation exposure and displacement risk.",
-  challenges:["CSV delivery limits the depth and freshness of licensed content Walmart actually receives","An unknown volume of licensed-but-unmapped SKUs","Staggered renewal dates across 5 license lines creating annual re-negotiation exposure","No market coverage today outside English/US despite Walmart's own expansion interest in CA/MX/Sam's Club","Informal consolidation review underway among 4 overlapping incumbent providers, with no formal RFP to control the timeline"],
-  solutions:["Migrated delivery from CSV to XML, with a sample file submitted for Walmart's evaluation, to unlock licensed-but-unreceived categories and attributes","Aligned Data Source lines and GDSN/API lines to a 3-year term, cutting renewal events from 4 to 1","Renewed Power Reviews UGC, positioning future CA/MX integration to support GDSN and Data Source expansion across LATAM regions, including multi-language data coverage","Launched a monthly cadence call and onsite workshop series, with the eCommerce team included, repositioning 1WorldSync as strategic partner ahead of any competitive RFP","Scoped a Phase 2 evaluation (CA/MX/Sam's Club expansion, unmapped SKU build-out) contingent on completing the term move"],
-},
-discovery:{
-  summary:"Walmart is a longstanding 1WorldSync account spanning Walmart and Sam's Club supplier data licensing, currently English/US-only. This was a preservation-and-expansion renewal run without an active RFP but against a live backdrop of vendor consolidation among Syndigo, Etilize/GfK, Rithum, and Salsify. Closed at $534,954 in total contract value.",
-  corporateStrategy:["Improve US catalog content depth and accuracy ahead of any geographic expansion","Evaluate consolidation of overlapping supplier data providers to simplify governance","Explore expansion into Canada, Mexico, and Sam's Club international markets","Apply Content Quality Score (completeness, accuracy, format adherence) as a standing vendor selection criterion"],
-  topOutcomes:["Cut renewal events from 4 staggered dates to 1 by aligning Data Source and GDSN/API lines to a single 3-year term","Unlocked licensed-but-unreceived categories via CSV→XML migration","Positioned 1WorldSync as strategic partner ahead of a formal consolidation RFP"],
-  challenges:["CSV delivery caps content freshness and depth versus what's actually licensed","Unmapped SKUs represent an unquantified content gap","Staggered license terms created a rolling annual re-negotiation window","No coverage today outside English/US despite stated expansion interest"],
-  jobsToBeDone:["Deliver complete, accurate, and up-to-date product content across Walmart.com and Sam's Club","Reduce annual contract re-negotiation overhead across GDSN and Data Source licenses","Build the internal business case for expanding data coverage into Canada, Mexico, and Sam's Club","Track vendor performance against Walmart's Content Quality Score"],
-  primaryUseCase:"Consolidate and deepen Walmart + Sam's Club product data delivery through 1WorldSync's GDSN and Data Source platform, with CSV→XML migration unlocking currently unreceived licensed content.",
-  goals:{"90 Days":["Complete CSV→XML migration for licensed Data Source categories","Finalize the 3-year term alignment across Data Source and GDSN","Launch monthly cadence call and first onsite workshop"],"1 Year":["Deliver measurable lift in Walmart's Content Quality Score","Complete unmapped SKU build-out evaluation","Build the business case for CA/MX/Sam's Club expansion"],"Beyond":["Expand GDSN and Data Source coverage into Walmart Canada, Mexico, and Sam's Club","Establish 1WorldSync as Walmart's primary strategic data partner across all incumbent-overlap categories"]},
-},
-stakeholders:[
-  {id:"s1",name:"Mark Ellison",role:"Sr. Manager, Item Integrity & Catalog Data Quality",designation:"champion",engagement:94,lastSeen:"6h ago",initials:"ME",bu:"Catalog Data Quality",approvalRequired:true,docsViewed:["Walmart Deal Review: Executive Summary","Solution & License Architecture"],linkedin:"https://linkedin.com/in/dr-mark-burnett",reportsTo:"s2"},
-  {id:"s2",name:"Olivia Reyes",role:"Director, Tech Operations, Catalog",designation:"decision-maker",engagement:88,lastSeen:"1d ago",initials:"OR",bu:"Tech Operations",approvalRequired:true,docsViewed:["Solution & License Architecture","Onsite Workshop Agenda"],linkedin:"https://linkedin.com/in/olivia-madsen",reportsTo:null},
-  {id:"s3",name:"Jeremy Whitfield",role:"Enterprise Transformation, Product Data & Technology",designation:"influencer",engagement:79,lastSeen:"2d ago",initials:"JW",bu:"Enterprise Transformation",approvalRequired:false,docsViewed:["Sample XML Feed: CSV to XML Migration","Onsite Workshop Agenda"],linkedin:"https://linkedin.com/in/jeremy-d-boyd",reportsTo:"s2"},
-  {id:"s4",name:"Damon Voss",role:"SVP, Decision Sciences",designation:"influencer",engagement:41,lastSeen:"9d ago",initials:"DV",bu:"Decision Sciences",approvalRequired:true,docsViewed:["Walmart Deal Review: Executive Summary"],linkedin:"https://linkedin.com/in/damon-bratcher-b71a0612",reportsTo:null},
-  {id:"s5",name:"Stuart Kessler",role:"Group Director, Global Operations, Omni Channel Fulfillment",designation:"influencer",engagement:68,lastSeen:"4d ago",initials:"SK",bu:"Omni Channel Fulfillment",approvalRequired:false,docsViewed:["Onsite Workshop Agenda"],linkedin:"https://linkedin.com/in/stuart-clark-50617954",reportsTo:null},
-],
-mapItems:[
-  {id:1,phase:"Value Alignment",task:"Signal & Intelligence",owner:"Mark H.",buyerOwner:"Mark Ellison",dueDate:"2026-03-03",status:"complete",notes:"Identified the informal consolidation review before it became a formal RFP; assessed exposure across Syndigo, Etilize/GfK, Rithum, and Salsify",approvalRequired:false},
-  {id:2,phase:"Value Alignment",task:"Multi-Thread Stakeholder Mapping",owner:"Mark H.",buyerOwner:"Mark Ellison + Olivia Reyes",dueDate:"2026-03-10",status:"complete",notes:"Individually engaged Mark, Olivia, Jeremy, Damon, and Stuart rather than routing everything through one contact",approvalRequired:false},
-  {id:3,phase:"Value Alignment",task:"Technical Validation: CSV to XML Migration",owner:"GDSN SMEs, SE",buyerOwner:"Jeremy Whitfield",dueDate:"2026-03-24",status:"complete",notes:"Scoped the migration path and delivered a sample XML file for Walmart's evaluation",approvalRequired:false},
-  {id:4,phase:"Value Alignment",task:"Onsite Workshop Kickoff",owner:"Mark H.",buyerOwner:"Olivia Reyes + eCommerce Team",dueDate:"2026-04-07",status:"complete",notes:"Established monthly cadence call and Walmart-hosted onsite workshop series; eCommerce team included given catalog/content-quality overlap",approvalRequired:false},
-  {id:5,phase:"Business Case",task:"Term Alignment & Catalog Depth Business Case",owner:"Mark H., Lead Engineer, Sales Leadership",buyerOwner:"Olivia Reyes",dueDate:"2026-04-21",status:"complete",notes:"Built economics for aligning Data Source and GDSN/API lines to a single 3-year term, cutting renewal events from 4 to 1",approvalRequired:true},
-  {id:6,phase:"Business Case",task:"Proposal Presentation",owner:"Mark H.",buyerOwner:"Olivia Reyes + Mark Ellison",dueDate:"2026-05-05",status:"complete",notes:"Presented one bundled proposal ahead of any formal consolidation review",approvalRequired:true},
-  {id:7,phase:"Paper Process",task:"Security & API Scope Review",owner:"AE, AM",buyerOwner:"Jeremy Whitfield",dueDate:"2026-05-19",status:"complete",notes:"MSA amendment; security review for the expanded GDW Read API scope",approvalRequired:true},
-  {id:8,phase:"Paper Process",task:"Contract Execution",owner:"Mark H.",buyerOwner:"Olivia Reyes (signing authority)",dueDate:"2026-06-01",status:"complete",notes:"Signed at $534,954 TCV with expanded scope and aligned terms",approvalRequired:true},
-],
-content:[
-  {id:1,title:"Walmart Deal Review: Executive Summary",type:"pptx",uploaded:"Mar 2",views:6,viewers:["Mark Ellison","Olivia Reyes"],lastViewed:"Olivia Reyes · 1d ago",url:"#",category:"Presentation"},
-  {id:2,title:"Solution & License Architecture",type:"docx",uploaded:"Mar 5",views:5,viewers:["Mark Ellison","Olivia Reyes"],lastViewed:"Mark Ellison · 2d ago",url:"#",category:"Discovery"},
-  {id:3,title:"Sample XML Feed: CSV to XML Migration",type:"link",uploaded:"Mar 20",views:3,viewers:["Jeremy Whitfield"],lastViewed:"Jeremy Whitfield · 3d ago",url:"#",category:"Technical"},
-  {id:4,title:"Onsite Workshop Agenda",type:"pdf",uploaded:"Apr 2",views:7,viewers:["Mark Ellison","Olivia Reyes","Jeremy Whitfield","Stuart Kessler"],lastViewed:"Stuart Kessler · 5h ago",url:"#",category:"Enablement"},
-],
-activityLog:[
-  {date:"May 28, 2026",entries:[
-    {person:"Olivia Reyes",email:"o.reyes@walmart.com",location:"Bentonville, US",time:"10:12am",duration:"21:15 min",actions:[{type:"viewed",item:"Solution & License Architecture",time:"10:12am"},{type:"viewed",item:"Onsite Workshop Agenda",time:"10:29am"}]},
-  ]},
-  {date:"May 20, 2026",entries:[
-    {person:"Mark Ellison",email:"m.ellison@walmart.com",location:"Bentonville, US",time:"2:40pm",duration:"16:05 min",actions:[{type:"viewed",item:"Walmart Deal Review: Executive Summary",time:"2:40pm"}]},
-    {person:"Jeremy Whitfield",email:"j.whitfield@walmart.com",location:"Bentonville, US",time:"4:18pm",duration:"9:50 min",actions:[{type:"viewed",item:"Sample XML Feed: CSV to XML Migration",time:"4:18pm"}]},
-  ]},
-]},
-
-];
-
 const Badge = ({label,color,bg,border,small}) => (
   <span style={{padding:small?"2px 7px":"3px 10px",borderRadius:4,background:bg,border:`1px solid ${border}`,color,fontSize:small?10:11,fontWeight:700,whiteSpace:"nowrap"}}>{label}</span>
 );
@@ -193,9 +150,22 @@ const renderMD = t => t
 
 const LI_SVG = <svg width="11" height="11" viewBox="0 0 24 24" fill="#0A66C2"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>;
 
-const ProspectLogin = ({deal,onSuccess}) => {
+const ProspectLogin = ({deal,shareSlug,onSuccess}) => {
   const [email,setEmail]=useState(""); const [code,setCode]=useState(""); const [error,setError]=useState(""); const [loading,setLoading]=useState(false);
-  const go=()=>{setLoading(true);setTimeout(()=>{if(code.toUpperCase()===deal.accessCode&&email.includes("@")){onSuccess(email);}else{setError("Invalid email or access code. Please check with your account executive.");setLoading(false);}},900);};
+  const go=async()=>{
+    setLoading(true);setError("");
+    if(shareSlug){
+      // Real external prospect: deal is unknown until this RPC succeeds -- there is no
+      // RLS path for an anon caller to read deal data any other way (see 0006 migration).
+      const {data,error:rpcErr}=await sb.rpc("get_deal_for_prospect",{p_share_slug:shareSlug,p_access_code:code,p_email:email});
+      if(rpcErr||!data||data.error){setError("Invalid email or access code. Please check with your account executive.");setLoading(false);return;}
+      onSuccess(mapDealFromDb(data.deal));
+    }else{
+      // Rep previewing their own already-loaded deal -- no RPC needed, data's already
+      // securely scoped to this authenticated user via RLS.
+      setTimeout(()=>{if(code.toUpperCase()===deal.accessCode&&email.includes("@")){onSuccess(email);}else{setError("Invalid email or access code. Please check with your account executive.");setLoading(false);}},600);
+    }
+  };
   return (<div style={{flex:1,minHeight:"100vh",background:"linear-gradient(135deg,#F0F4FF 0%,#F7F8FA 60%,#EEF3FF 100%)",display:"flex",alignItems:"center",justifyContent:"center"}}>
     <div style={{width:440,background:P.surface,borderRadius:20,padding:"44px 40px",boxShadow:"0 20px 60px rgba(26,79,186,0.12)",border:`1px solid ${P.border}`}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:32}}>
@@ -203,10 +173,13 @@ const ProspectLogin = ({deal,onSuccess}) => {
           <div style={{width:36,height:36,background:`linear-gradient(135deg,${P.accent},${P.accentMid})`,borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center"}}><span style={{color:"#fff",fontSize:16,fontWeight:800}}>D</span></div>
           <span style={{fontSize:16,fontWeight:800,color:P.text}}>DealRoom</span>
         </div>
-        <div style={{display:"flex",alignItems:"center",gap:8}}>
+        {/* Company branding only shown when we already have deal data (rep preview) --
+            a real prospect hasn't authenticated yet, so we don't know or leak which
+            company this link belongs to until after a successful code check. */}
+        {deal&&<div style={{display:"flex",alignItems:"center",gap:8}}>
           <div style={{width:28,height:28,borderRadius:6,background:deal.color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:800,color:"#fff"}}>{deal.logo}</div>
           <span style={{fontSize:12,fontWeight:600,color:P.textSec}}>{deal.company}</span>
-        </div>
+        </div>}
       </div>
       <div style={{fontSize:24,fontWeight:800,color:P.text,letterSpacing:"-0.6px",marginBottom:6}}>Access your Deal Room</div>
       <div style={{fontSize:13,color:P.textSec,lineHeight:1.6,marginBottom:28}}>Your account executive has prepared a private workspace for your evaluation. Enter your credentials to access.</div>
@@ -327,12 +300,98 @@ const DealCreator = ({onSave,onClose}) => {
   </div>);
 };
 
-function DealRoom() {
-  const [deals,setDeals]=useState(INIT_DEALS);
-  const [activeId,setActiveId]=useState(1);
-  const [viewMode,setViewMode]=useState("rep");
+const AuthGate = () => {
+  const [mode,setMode]=useState("signin"); // "signin" | "signup" | "check-email"
+  const [email,setEmail]=useState(""); const [password,setPassword]=useState("");
+  const [orgName,setOrgName]=useState(""); const [fullName,setFullName]=useState("");
+  const [error,setError]=useState(""); const [loading,setLoading]=useState(false);
+
+  const submit=async()=>{
+    setLoading(true);setError("");
+    try{
+      if(mode==="signup"){
+        const {data,error:signUpErr}=await sb.auth.signUp({email,password});
+        if(signUpErr)throw signUpErr;
+        if(data.session){
+          const {error:rpcErr}=await sb.rpc("create_organization_with_owner",{p_org_name:orgName,p_full_name:fullName||null});
+          if(rpcErr)throw rpcErr;
+        }else{
+          setMode("check-email");
+        }
+      }else{
+        const {error:signInErr}=await sb.auth.signInWithPassword({email,password});
+        if(signInErr)throw signInErr;
+      }
+    }catch(e){setError(e.message||"Something went wrong. Please try again.");}
+    setLoading(false);
+  };
+
+  const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:8,padding:"11px 14px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
+  const lbl={fontSize:11,fontWeight:700,color:P.textSec,textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:5};
+
+  return (<div style={{flex:1,minHeight:"100vh",background:"linear-gradient(135deg,#F0F4FF 0%,#F7F8FA 60%,#EEF3FF 100%)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+    <div style={{width:420,background:P.surface,borderRadius:20,padding:"44px 40px",boxShadow:"0 20px 60px rgba(26,79,186,0.12)",border:`1px solid ${P.border}`}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:28}}>
+        <div style={{width:36,height:36,background:`linear-gradient(135deg,${P.accent},${P.accentMid})`,borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center"}}><span style={{color:"#fff",fontSize:16,fontWeight:800}}>D</span></div>
+        <span style={{fontSize:16,fontWeight:800,color:P.text}}>DealRoom</span>
+      </div>
+
+      {mode==="check-email"?(<>
+        <div style={{fontSize:20,fontWeight:800,color:P.text,marginBottom:8}}>Check your email</div>
+        <div style={{fontSize:13,color:P.textSec,lineHeight:1.6}}>We sent a confirmation link to <strong>{email}</strong>. Click it, then sign in below.</div>
+        <button onClick={()=>setMode("signin")} style={{width:"100%",padding:"12px",marginTop:20,background:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>Back to Sign In</button>
+      </>):(<>
+        <div style={{fontSize:22,fontWeight:800,color:P.text,letterSpacing:"-0.5px",marginBottom:24}}>{mode==="signup"?"Create your workspace":"Sign in"}</div>
+        {mode==="signup"&&<div style={{marginBottom:14}}><label style={lbl}>Organization Name</label>
+          <input value={orgName} onChange={e=>setOrgName(e.target.value)} placeholder="Acme Sales Team" style={inp}/></div>}
+        {mode==="signup"&&<div style={{marginBottom:14}}><label style={lbl}>Your Name</label>
+          <input value={fullName} onChange={e=>setFullName(e.target.value)} placeholder="Jane Doe" style={inp}/></div>}
+        <div style={{marginBottom:14}}><label style={lbl}>Email</label>
+          <input value={email} onChange={e=>setEmail(e.target.value)} type="email" placeholder="you@company.com" style={inp}/></div>
+        <div style={{marginBottom:20}}><label style={lbl}>Password</label>
+          <input value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} type="password" placeholder="••••••••" style={inp}/>
+          {error&&<div style={{fontSize:11,color:P.red,marginTop:6}}>{error}</div>}</div>
+        <button onClick={submit} disabled={loading||!email||!password||(mode==="signup"&&!orgName)} style={{width:"100%",padding:"12px",background:loading||!email||!password?P.border:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:14,fontWeight:700,cursor:loading?"not-allowed":"pointer"}}>{loading?"Please wait…":mode==="signup"?"Create Workspace →":"Sign In →"}</button>
+        <div style={{textAlign:"center",marginTop:18,fontSize:12,color:P.textMute}}>
+          {mode==="signup"?"Already have an account? ":"New here? "}
+          <span onClick={()=>{setMode(mode==="signup"?"signin":"signup");setError("");}} style={{color:P.accent,fontWeight:700,cursor:"pointer"}}>{mode==="signup"?"Sign in":"Create a workspace"}</span>
+        </div>
+      </>)}
+    </div>
+  </div>);
+};
+
+const NameYourOrg = ({onDone}) => {
+  const [orgName,setOrgName]=useState(""); const [loading,setLoading]=useState(false); const [error,setError]=useState("");
+  const submit=async()=>{
+    setLoading(true);setError("");
+    const {error:rpcErr}=await sb.rpc("create_organization_with_owner",{p_org_name:orgName,p_full_name:null});
+    if(rpcErr){setError(rpcErr.message);setLoading(false);return;}
+    onDone();
+  };
+  const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:8,padding:"11px 14px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
+  return (<div style={{flex:1,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}>
+    <div style={{width:400,background:P.surface,borderRadius:20,padding:"40px",boxShadow:"0 20px 60px rgba(26,79,186,0.12)",border:`1px solid ${P.border}`}}>
+      <div style={{fontSize:20,fontWeight:800,color:P.text,marginBottom:8}}>Name your organization</div>
+      <div style={{fontSize:13,color:P.textSec,marginBottom:20,lineHeight:1.6}}>One more step before you can start tracking deals.</div>
+      <input value={orgName} onChange={e=>setOrgName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="Acme Sales Team" style={inp}/>
+      {error&&<div style={{fontSize:11,color:P.red,marginTop:6}}>{error}</div>}
+      <button onClick={submit} disabled={loading||!orgName} style={{width:"100%",padding:"12px",marginTop:16,background:loading||!orgName?P.border:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>{loading?"Creating…":"Continue →"}</button>
+    </div>
+  </div>);
+};
+
+function DealRoom({prospectShareSlug}) {
+  const [session,setSession]=useState(undefined); // undefined=checking, null=signed out, object=signed in
+  const [needsOrgSetup,setNeedsOrgSetup]=useState(false);
+  const [refreshKey,setRefreshKey]=useState(0);
+  const [orgId,setOrgId]=useState(null);
+  const [loadingDeals,setLoadingDeals]=useState(!prospectShareSlug);
+  const [deals,setDeals]=useState([]);
+  const [activeId,setActiveId]=useState(null);
+  const [viewMode,setViewMode]=useState(prospectShareSlug?"prospect":"rep");
   const [prospectAuth,setProspectAuth]=useState({});
-  const [tab,setTab]=useState("map");
+  const [tab,setTab]=useState(prospectShareSlug?"welcome":"map");
   const [aiOpen,setAiOpen]=useState(false);
   const [aiMode,setAiMode]=useState(null);
   const [aiText,setAiText]=useState("");
@@ -346,25 +405,139 @@ function DealRoom() {
   const [activeLog,setActiveLog]=useState(null);
   const [selCat,setSelCat]=useState("All");
 
+  // Rep path only: track the Supabase Auth session.
+  useEffect(()=>{
+    if(prospectShareSlug)return;
+    sb.auth.getSession().then(({data})=>setSession(data.session));
+    const {data:sub}=sb.auth.onAuthStateChange((_event,s)=>setSession(s));
+    return ()=>sub.subscription.unsubscribe();
+  },[prospectShareSlug]);
+
+  // Rep path only: once signed in, resolve org membership and load real deals.
+  useEffect(()=>{
+    if(prospectShareSlug||!session)return;
+    let cancelled=false;
+    (async()=>{
+      setLoadingDeals(true);
+      const {data:mem}=await sb.from("organization_members").select("org_id").eq("user_id",session.user.id).limit(1).maybeSingle();
+      if(cancelled)return;
+      if(!mem){setNeedsOrgSetup(true);setLoadingDeals(false);return;}
+      setNeedsOrgSetup(false);
+      setOrgId(mem.org_id);
+      const {data:rows}=await sb.from("deals").select("*, stakeholders(*), deal_tasks(*), documents(*)").eq("org_id",mem.org_id).is("archived_at",null);
+      if(cancelled)return;
+      const mapped=(rows||[]).map(mapDealFromDb);
+
+      // View counts and activity log are event-table aggregates, not stored fields --
+      // fetch once per org load and merge in. Both will legitimately come back empty
+      // right now since nothing yet writes a document_views/deal_visits row (no real
+      // document viewer exists to trigger from) -- the plumbing is correct and ready for
+      // when that instrumentation gets built.
+      const allDocIds=mapped.flatMap(d=>d.content.map(c=>c.id));
+      const allDealIds=mapped.map(d=>d.id);
+      const [{data:viewStats},{data:visits}]=await Promise.all([
+        allDocIds.length?sb.from("document_view_stats").select("*").in("document_id",allDocIds):{data:[]},
+        allDealIds.length?sb.from("deal_visits").select("*, deal_visit_actions(*)").in("deal_id",allDealIds).order("started_at",{ascending:false}):{data:[]},
+      ]);
+      if(cancelled)return;
+
+      const statsByDoc=Object.fromEntries((viewStats||[]).map(v=>[v.document_id,v]));
+      const visitsByDeal={};
+      (visits||[]).forEach(v=>{(visitsByDeal[v.deal_id]=visitsByDeal[v.deal_id]||[]).push(v);});
+
+      const enriched=mapped.map(d=>({
+        ...d,
+        content:d.content.map(c=>{
+          const stat=statsByDoc[c.id];
+          return stat?{...c,views:stat.view_count,viewers:stat.viewer_names||[],lastViewed:stat.last_viewer_name?`${stat.last_viewer_name} · ${relTime(stat.last_viewed_at)}`:"Not yet viewed"}:c;
+        }),
+        activityLog:Object.entries(
+          (visitsByDeal[d.id]||[]).reduce((acc,v)=>{
+            const day=shortDate(v.started_at)||"Unknown";
+            (acc[day]=acc[day]||[]).push({
+              person:v.visitor_name||"Unknown",email:v.visitor_email||"",location:v.location||"",
+              time:new Date(v.started_at).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}),
+              duration:fmtDuration(v.duration_seconds),
+              actions:(v.deal_visit_actions||[]).map(a=>({type:a.action_type,item:a.item_label,time:new Date(a.occurred_at).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"})})),
+            });
+            return acc;
+          },{})
+        ).map(([date,entries])=>({date,entries})),
+      }));
+
+      setDeals(enriched);
+      setActiveId(enriched[0]?.id??null);
+      setLoadingDeals(false);
+    })();
+    return ()=>{cancelled=true;};
+  },[session,prospectShareSlug,refreshKey]);
+
   const deal=deals.find(d=>d.id===activeId);
   const upd=d=>setDeals(prev=>prev.map(x=>x.id===d.id?d:x));
   const flash=msg=>{setToast(msg);setTimeout(()=>setToast(null),2800);};
 
-  const phases=deal.includeTrialSessions?PHASES_ALL:PHASES_NO_TRIAL;
-  const visItems=deal.mapItems.filter(t=>phases.includes(t.phase));
-  const done=visItems.filter(t=>t.status==="complete").length;
-  const pct=Math.round(done/(visItems.length||1)*100);
+  // Creating a brand-new deal room is real write-through to Supabase (unlike editing an
+  // existing deal's tasks/stakeholders/status, which stays local-state-only for now --
+  // see the step's scope boundary). Without this, a fresh org could never get its first
+  // deal past a page refresh.
+  const createDeal=async(draft)=>{
+    const slugBase=(draft.company||"deal").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"")||"deal";
+    const shareSlug=`${slugBase}-${crypto.randomUUID().slice(0,8)}`;
+    const accessCode=(draft.accessCode||Math.random().toString(36).slice(2,8).toUpperCase()).toUpperCase();
+    const {data:newDeal,error}=await sb.from("deals").insert({
+      org_id:orgId,
+      created_by:session.user.id,
+      company_name:draft.company,
+      primary_contact_name:draft.contact||null,
+      title:draft.title||null,
+      stage:"Discovery",
+      value_amount:parseFloat((draft.value||"").replace(/[^0-9.]/g,""))||null,
+      close_date:draft.closeDate||null,
+      logo_initials:draft.logo||(draft.company||"").slice(0,2).toUpperCase(),
+      brand_color:draft.color||P.accent,
+      industry:draft.industry||null,
+      engagement_score:50,
+      include_trial_sessions:!!draft.includeTrialSessions,
+      welcome_message:draft.welcomeMsg||null,
+      exec_summary:draft.execSummary||{},
+      discovery:draft.discovery||{},
+      share_slug:shareSlug,
+      access_code:accessCode,
+    }).select().single();
+    if(error||!newDeal){flash("Couldn't create deal room");return;}
+
+    if((draft.stakeholders||[]).length){
+      await sb.from("stakeholders").insert(draft.stakeholders.map(s=>({
+        deal_id:newDeal.id,created_by:session.user.id,name:s.name,role_title:s.role,
+        designation:s.designation,engagement_score:s.engagement??50,business_unit:s.bu||null,
+        approval_required:!!s.approvalRequired,linkedin_url:s.linkedin||null,
+      })));
+    }
+    if((draft.mapItems||[]).length){
+      await sb.from("deal_tasks").insert(draft.mapItems.map((t,i)=>({
+        deal_id:newDeal.id,created_by:session.user.id,phase:t.phase,task:t.task,
+        owner_name:t.owner||null,buyer_owner_label:t.buyerOwner||null,due_date:t.dueDate||null,
+        status:t.status||"pending",notes:t.notes||null,approval_required:!!t.approvalRequired,sort_order:i,
+      })));
+    }
+
+    setShowCreator(false);
+    flash("Deal room created!");
+    setRefreshKey(k=>k+1);
+  };
 
   const repTabs=[["map","Action Plan"],["summary","Executive Summary"],["discovery","Discovery"],["content","Content"],["stakeholders","Stakeholders"],["analytics","Analytics"]];
   const prosTabs=[["welcome","Welcome"],["summary","Executive Summary"],["map","Action Plan"],["discovery","Discovery"],["content","Resources"],["stakeholders","Team"]];
   const tabs=viewMode==="prospect"?prosTabs:repTabs;
 
-  const ctx=()=>`Deal: ${deal.title} | ${deal.company} | Stage: ${deal.stage} | Value: ${deal.value}\nIndustry: ${deal.industry}\nStakeholders: ${deal.stakeholders.map(s=>`${s.name} (${s.role}, ${s.designation})`).join("; ")}\nOutcomes: ${deal.discovery.topOutcomes.join("; ")}\nChallenges: ${deal.discovery.challenges.join("; ")}\nMAP: ${done}/${visItems.length} complete`;
-
   const runAI=async(mode,custom)=>{setAiLoading(true);setAiText("");setAiOpen(true);setAiMode(mode);
+    const phases=deal.includeTrialSessions?PHASES_ALL:PHASES_NO_TRIAL;
+    const visItems=deal.mapItems.filter(t=>phases.includes(t.phase));
+    const done=visItems.filter(t=>t.status==="complete").length;
+    const ctx=`Deal: ${deal.title} | ${deal.company} | Stage: ${deal.stage} | Value: ${deal.value}\nIndustry: ${deal.industry}\nStakeholders: ${deal.stakeholders.map(s=>`${s.name} (${s.role}, ${s.designation})`).join("; ")}\nOutcomes: ${deal.discovery.topOutcomes.join("; ")}\nChallenges: ${deal.discovery.challenges.join("; ")}\nMAP: ${done}/${visItems.length} complete`;
     const SYS="You are an elite enterprise sales coach for CPG digital commerce. Be sharp, direct, tactical. Use ## headers, **bold**, - bullets. No fluff.";
-    const PR={brief:`Write a deal brief. Score health 1-10, assess champion, list top 3 risks, 3 specific next actions.\n\n${ctx()}`,bizcase:`Build a champion-ready internal business case. Include: Executive Summary, Problem with metrics, Solution fit, ROI (CPG benchmarks), Risk of Inaction, Timeline.\n\n${ctx()}`,nextsteps:`5 tactical next steps this week. For each: who to contact, what to say, why it matters.\n\n${ctx()}`,email:`Draft follow-up email to ${deal.stakeholders[0]?.name}. Reference their outcomes. Subject + body. Max 150 words.\n\n${ctx()}`,chat:custom||""};
-    try{setAiText(await callClaude(SYS,PR[mode]+(mode==="chat"?`\n\nDeal:\n${ctx()}`:""),1200));}catch{setAiText("Unable to reach AI. Please try again.");}
+    const PR={brief:`Write a deal brief. Score health 1-10, assess champion, list top 3 risks, 3 specific next actions.\n\n${ctx}`,bizcase:`Build a champion-ready internal business case. Include: Executive Summary, Problem with metrics, Solution fit, ROI (CPG benchmarks), Risk of Inaction, Timeline.\n\n${ctx}`,nextsteps:`5 tactical next steps this week. For each: who to contact, what to say, why it matters.\n\n${ctx}`,email:`Draft follow-up email to ${deal.stakeholders[0]?.name}. Reference their outcomes. Subject + body. Max 150 words.\n\n${ctx}`,chat:custom||""};
+    try{setAiText(await callClaude(SYS,PR[mode]+(mode==="chat"?`\n\nDeal:\n${ctx}`:""),1200));}catch{setAiText("Unable to reach AI. Please try again.");}
     setAiLoading(false);};
 
   const inpS={border:`1px solid ${P.border}`,borderRadius:6,padding:"8px 10px",fontSize:12,color:P.text,background:P.surface,fontFamily:"inherit",outline:"none"};
@@ -379,7 +552,46 @@ input:focus,select:focus,textarea:focus{border-color:${P.accent}!important;box-s
 .shim>div{animation:sh 1.5s ease infinite alternate;background:linear-gradient(90deg,#f1f5f9,#e9edf5,#f1f5f9);background-size:200%;border-radius:4px;}@keyframes sh{from{background-position:0%}to{background-position:100%}}
 select option{background:#fff}`;
 
-  if(viewMode==="prospect"&&!prospectAuth[activeId]){
+  const LoadingScreen=()=><div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:P.textMute,fontSize:13}}>Loading…</div>;
+
+  // Real external prospect, reached via /d/{share_slug}: no picker, no auth gate, no
+  // branding until the access code is verified server-side.
+  if(prospectShareSlug){
+    if(!prospectAuth[prospectShareSlug]){
+      return <div style={{fontFamily:"'Plus Jakarta Sans','Segoe UI',sans-serif"}}><style>{CSS}</style>
+        <ProspectLogin shareSlug={prospectShareSlug} onSuccess={mappedDeal=>{
+          setDeals([mappedDeal]);
+          setActiveId(mappedDeal.id);
+          setProspectAuth(p=>({...p,[prospectShareSlug]:true}));
+        }}/>
+      </div>;
+    }
+  } else {
+    // Rep path: auth, then org bootstrap, then real data load.
+    if(session===undefined)return <LoadingScreen/>;
+    if(session===null)return <AuthGate/>;
+    if(needsOrgSetup)return <NameYourOrg onDone={()=>{setNeedsOrgSetup(false);setRefreshKey(k=>k+1);}}/>;
+    if(loadingDeals)return <LoadingScreen/>;
+  }
+
+  if(!deal){
+    // Signed in, org resolved, but zero deals yet -- the old render tree below assumes a
+    // deal always exists, so this has to be its own early return rather than patched
+    // field-by-field into every downstream reference.
+    return <div style={{fontFamily:"'Plus Jakarta Sans','Segoe UI',sans-serif",minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}}><style>{CSS}</style>
+      <div style={{fontSize:16,fontWeight:700,color:P.text}}>No deal rooms yet</div>
+      <div style={{fontSize:13,color:P.textSec}}>Create your first one to get started.</div>
+      <button onClick={()=>setShowCreator(true)} style={{padding:"10px 20px",background:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>+ New Deal Room</button>
+      {showCreator&&<DealCreator onSave={createDeal} onClose={()=>setShowCreator(false)}/>}
+    </div>;
+  }
+
+  const phases=deal.includeTrialSessions?PHASES_ALL:PHASES_NO_TRIAL;
+  const visItems=deal.mapItems.filter(t=>phases.includes(t.phase));
+  const done=visItems.filter(t=>t.status==="complete").length;
+  const pct=Math.round(done/(visItems.length||1)*100);
+
+  if(!prospectShareSlug&&viewMode==="prospect"&&!prospectAuth[activeId]){
     return <div style={{fontFamily:"'Plus Jakarta Sans','Segoe UI',sans-serif"}}><style>{CSS}</style>
       <div style={{display:"flex",minHeight:"100vh"}}>
         <div style={{width:252,background:P.surface,borderRight:`1px solid ${P.border}`,display:"flex",flexDirection:"column",flexShrink:0}}>
@@ -407,8 +619,9 @@ select option{background:#fff}`;
   return <div style={{fontFamily:"'Plus Jakarta Sans','Segoe UI',sans-serif",background:P.bg,minHeight:"100vh",display:"flex",color:P.text}}>
     <style>{CSS}</style>
 
-    {/* SIDEBAR */}
-    <div style={{width:252,background:P.surface,borderRight:`1px solid ${P.border}`,display:"flex",flexDirection:"column",flexShrink:0}}>
+    {/* SIDEBAR -- hidden entirely for a real prospect on a share link: no picker into
+        other org deals, no rep/prospect toggle they could flip to see edit controls. */}
+    {!prospectShareSlug&&<div style={{width:252,background:P.surface,borderRight:`1px solid ${P.border}`,display:"flex",flexDirection:"column",flexShrink:0}}>
       <div style={{padding:"18px 16px 14px",borderBottom:`1px solid ${P.border}`}}>
         <div style={{display:"flex",alignItems:"center",gap:9}}>
           <div style={{width:32,height:32,background:`linear-gradient(135deg,${P.accent},${P.accentMid})`,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center"}}><span style={{color:"#fff",fontSize:14,fontWeight:800}}>D</span></div>
@@ -433,9 +646,10 @@ select option{background:#fff}`;
       </div>
       <div style={{padding:"12px 16px",borderTop:`1px solid ${P.border}`,display:"flex",alignItems:"center",gap:10}}>
         <img src={AE.photo} alt={AE.name} style={{width:32,height:32,borderRadius:"50%",objectFit:"cover",border:`2px solid ${P.border}`,flexShrink:0}} onError={e=>{e.target.style.display="none";}}/>
-        <div><div style={{fontSize:12,fontWeight:700,color:P.text}}>{AE.name}</div><div style={{fontSize:11,color:P.textMute,marginTop:1}}>{AE.title}</div></div>
+        <div style={{flex:1,minWidth:0}}><div style={{fontSize:12,fontWeight:700,color:P.text}}>{AE.name}</div><div style={{fontSize:11,color:P.textMute,marginTop:1}}>{AE.title}</div></div>
+        <button onClick={()=>sb.auth.signOut()} title="Sign out" style={{background:"none",border:"none",color:P.textMute,fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0}}>Sign out</button>
       </div>
-    </div>
+    </div>}
 
     {/* MAIN */}
     <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
@@ -790,9 +1004,9 @@ select option{background:#fff}`;
       </div>
     </div>
 
-    {showCreator&&<DealCreator onSave={(d)=>{setDeals(prev=>[...prev,d]);setActiveId(d.id);setShowCreator(false);flash("Deal room created!");}} onClose={()=>setShowCreator(false)}/>}
+    {showCreator&&<DealCreator onSave={createDeal} onClose={()=>setShowCreator(false)}/>}
     {toast&&<div style={{position:"fixed",bottom:24,left:"50%",transform:"translateX(-50%)",background:P.text,borderRadius:8,padding:"10px 20px",fontSize:12,color:"#fff",fontWeight:600,boxShadow:"0 4px 20px rgba(0,0,0,0.15)",zIndex:999}}>{toast} ✓</div>}
   </div>;
 }
 
-globalThis.DealRoom = DealRoom;
+globalThis.DealRoom = () => React.createElement(DealRoom, { prospectShareSlug: PROSPECT_ROUTE });
