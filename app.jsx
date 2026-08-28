@@ -107,6 +107,11 @@ function mapDealFromDb(row) {
       ...(row.deal_tasks || []).map(t => t.created_by),
       ...(row.documents || []).map(d => d.created_by),
     ].filter(Boolean))),
+    // Default -- only the rep's org-loading effect resolves this to real names (it merges
+    // in a profiles lookup that a prospect has no business making). Without this default,
+    // a prospect's deal (loaded straight from get_deal_for_prospect, which never runs that
+    // merge) would have contributors===undefined and crash the header's avatar cluster.
+    contributors: [],
   };
 }
 
@@ -1082,7 +1087,7 @@ select option{background:#fff}
           </div>
         </div>
         <div style={{display:"flex",gap:14,alignItems:"center"}}>
-          {deal.contributors.length>0&&<div style={{display:"flex"}}>
+          {(deal.contributors||[]).length>0&&<div style={{display:"flex"}}>
             {deal.contributors.slice(0,3).map((c,i)=>(
               <div key={c.id} title={c.name} style={{width:30,height:30,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11.5,fontWeight:700,color:"#fff",border:`2px solid ${P.surface}`,marginLeft:i===0?0:-9,background:[P.accent,P.green,P.ink,"#8A9099"][i%4]}} className="headline">{c.initials}</div>
             ))}
