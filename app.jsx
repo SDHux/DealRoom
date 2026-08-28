@@ -327,8 +327,16 @@ const AuthGate = () => {
         const {data,error:signUpErr}=await sb.auth.signUp({email,password});
         if(signUpErr)throw signUpErr;
         if(data.session){
-          const {error:rpcErr}=await sb.rpc("create_organization_with_owner",{p_org_name:orgName,p_full_name:fullName||null});
-          if(rpcErr)throw rpcErr;
+          // Defensive: with "Confirm email" off this branch can still fire immediately
+          // (see 0010_org_invitations.sql's header comment), so check for a pending
+          // invite before creating a brand-new org -- an invited teammate landing on the
+          // plain signup form should join their team, not become owner of a bogus one.
+          const {data:joinedOrgId,error:acceptErr}=await sb.rpc("accept_pending_invite");
+          if(acceptErr)throw acceptErr;
+          if(!joinedOrgId){
+            const {error:rpcErr}=await sb.rpc("create_organization_with_owner",{p_org_name:orgName,p_full_name:fullName||null});
+            if(rpcErr)throw rpcErr;
+          }
         }else{
           setMode("check-email");
         }
@@ -405,11 +413,157 @@ const NameYourOrg = ({onDone}) => {
   </div>);
 };
 
+const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
+  const [tab,setTab]=useState("team");
+  const [members,setMembers]=useState([]);
+  const [invites,setInvites]=useState([]);
+  const [org,setOrg]=useState(null);
+  const [loading,setLoading]=useState(true);
+  const [error,setError]=useState("");
+  const [inviteEmail,setInviteEmail]=useState("");
+  const [inviteRole,setInviteRole]=useState("member");
+  const [orgName,setOrgName]=useState("");
+  const [logoUploading,setLogoUploading]=useState(false);
+
+  const load=async()=>{
+    setLoading(true);setError("");
+    const [{data:mem,error:memErr},{data:inv,error:invErr},{data:orgRow,error:orgErr}]=await Promise.all([
+      sb.from("organization_members").select("id,user_id,role,created_at").eq("org_id",orgId),
+      sb.from("org_invitations").select("id,email,role,created_at,expires_at").eq("org_id",orgId).is("accepted_at",null),
+      sb.from("organizations").select("name,logo_url").eq("id",orgId).single(),
+    ]);
+    if(memErr||invErr||orgErr){setError("Couldn't load settings");setLoading(false);return;}
+    // organization_members and profiles both reference auth.users independently -- no
+    // direct FK between them, so PostgREST can't embed this in one query. Same
+    // merge-in-JS pattern already used for view stats/visits in the main loading effect.
+    const userIds=(mem||[]).map(m=>m.user_id);
+    const {data:profiles}=userIds.length?await sb.from("profiles").select("id,email,full_name").in("id",userIds):{data:[]};
+    const profileById=Object.fromEntries((profiles||[]).map(p=>[p.id,p]));
+    setMembers((mem||[]).map(m=>({...m,email:profileById[m.user_id]?.email,fullName:profileById[m.user_id]?.full_name})));
+    setInvites(inv||[]);
+    setOrg(orgRow);
+    setOrgName(orgRow?.name||"");
+    setLoading(false);
+  };
+  useEffect(()=>{load();},[orgId]);
+
+  const canManage=targetRole=>myRole==="owner"||(myRole==="admin"&&targetRole==="member");
+
+  const sendInvite=async()=>{
+    if(!inviteEmail.trim())return;
+    const {error:err}=await sb.from("org_invitations").insert({org_id:orgId,email:inviteEmail.trim().toLowerCase(),role:inviteRole});
+    if(err){setError(err.code==="23505"?"There's already a pending invite for that email.":"Couldn't send invite");return;}
+    setInviteEmail("");setError("");
+    load();
+  };
+  const cancelInvite=async id=>{await sb.from("org_invitations").delete().eq("id",id);load();};
+  const changeRole=async(memberId,role)=>{await sb.from("organization_members").update({role}).eq("id",memberId);load();};
+  const removeMember=async memberId=>{await sb.from("organization_members").delete().eq("id",memberId);load();};
+
+  const saveOrgName=async()=>{
+    const {error:err}=await sb.from("organizations").update({name:orgName}).eq("id",orgId);
+    if(err){setError("Couldn't update organization name");return;}
+    setError("");load();
+  };
+
+  const uploadLogo=async file=>{
+    setLogoUploading(true);
+    const path=`${orgId}/logo`;
+    const {error:upErr}=await sb.storage.from("org-logos").upload(path,file,{upsert:true,contentType:file.type});
+    if(upErr){setError("Couldn't upload logo");setLogoUploading(false);return;}
+    const {data:{publicUrl}}=sb.storage.from("org-logos").getPublicUrl(path);
+    const {error:rpcErr}=await sb.rpc("set_org_logo",{p_org_id:orgId,p_logo_url:publicUrl});
+    if(rpcErr){setError("Couldn't save logo");setLogoUploading(false);return;}
+    setLogoUploading(false);load();
+  };
+
+  const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
+
+  return (<div style={{position:"fixed",inset:0,background:"rgba(17,24,39,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
+    <div style={{background:P.surface,borderRadius:16,width:620,maxHeight:"85vh",overflowY:"auto",boxShadow:"0 24px 64px rgba(0,0,0,0.16)"}}>
+      <div style={{padding:"20px 24px 0",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div style={{fontSize:17,fontWeight:800,color:P.text}}>Team &amp; Settings</div>
+        <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,color:P.textMute,cursor:"pointer"}}>×</button>
+      </div>
+      <div style={{padding:"14px 24px 0",display:"flex",gap:4,borderBottom:`1px solid ${P.border}`}}>
+        {[["team","Team"],["general","General"]].map(([k,l])=>(
+          <button key={k} onClick={()=>setTab(k)} style={{padding:"8px 14px",background:"none",border:"none",borderBottom:`2px solid ${tab===k?P.accent:"transparent"}`,color:tab===k?P.accent:P.textSec,fontSize:13,fontWeight:tab===k?700:400,cursor:"pointer"}}>{l}</button>
+        ))}
+      </div>
+      <div style={{padding:24}}>
+        {error&&<div style={{fontSize:12,color:P.red,marginBottom:14,padding:"8px 12px",background:P.redBg,border:`1px solid ${P.redBorder}`,borderRadius:6}}>{error}</div>}
+        {loading?<div style={{color:P.textMute,fontSize:13,textAlign:"center",padding:20}}>Loading…</div>:<>
+        {tab==="team"&&<div>
+          <div style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:10}}>Members</div>
+          {members.map(m=>(
+            <div key={m.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:`1px solid ${P.bg}`}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:13,fontWeight:600,color:P.text}}>{m.fullName||m.email||"Unknown"}</div>
+                <div style={{fontSize:11,color:P.textMute}}>{m.email}</div>
+              </div>
+              {m.user_id===myUserId?<Badge small label={m.role} color={P.accent} bg={P.accentLight} border="#BFDBFE"/>
+              :canManage(m.role)?(<>
+                <select value={m.role} onChange={e=>changeRole(m.id,e.target.value)} style={{...inp,width:110,padding:"5px 8px",fontSize:11}}>
+                  {myRole==="owner"&&<option value="admin">admin</option>}
+                  <option value="member">member</option>
+                </select>
+                <button onClick={()=>removeMember(m.id)} style={{background:"none",border:"none",color:P.red,fontSize:11,fontWeight:600,cursor:"pointer"}}>Remove</button>
+              </>):<Badge small label={m.role} color={P.textSec} bg={P.bg} border={P.border}/>}
+            </div>
+          ))}
+
+          <div style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",margin:"20px 0 10px"}}>Invite a teammate</div>
+          <div style={{display:"flex",gap:8,marginBottom:8}}>
+            <input placeholder="teammate@company.com" value={inviteEmail} onChange={e=>setInviteEmail(e.target.value)} style={inp}/>
+            <select value={inviteRole} onChange={e=>setInviteRole(e.target.value)} style={{...inp,width:110}}>
+              {myRole==="owner"&&<option value="admin">admin</option>}
+              <option value="member">member</option>
+            </select>
+            <button onClick={sendInvite} style={{padding:"9px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>Invite</button>
+          </div>
+          <div style={{fontSize:11,color:P.textMute,lineHeight:1.6,marginBottom:16}}>Share this app's sign-up link with them directly -- once they sign up with this exact email, they'll join your team automatically instead of creating a new organization.</div>
+
+          {invites.length>0&&<>
+            <div style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>Pending invites</div>
+            {invites.map(i=>(
+              <div key={i.id} style={{display:"flex",alignItems:"center",gap:10,padding:"7px 0"}}>
+                <div style={{flex:1,fontSize:13,color:P.text}}>{i.email}</div>
+                <Badge small label={i.role} color={P.textSec} bg={P.bg} border={P.border}/>
+                <button onClick={()=>cancelInvite(i.id)} style={{background:"none",border:"none",color:P.textMute,fontSize:11,cursor:"pointer"}}>Cancel</button>
+              </div>
+            ))}
+          </>}
+        </div>}
+
+        {tab==="general"&&<div>
+          <div style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>Organization Name</div>
+          <div style={{display:"flex",gap:8,marginBottom:20}}>
+            <input value={orgName} onChange={e=>setOrgName(e.target.value)} disabled={myRole!=="owner"} style={{...inp,opacity:myRole!=="owner"?0.6:1}}/>
+            {myRole==="owner"&&<button onClick={saveOrgName} style={{padding:"9px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Save</button>}
+          </div>
+          <div style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>Logo</div>
+          <div style={{display:"flex",alignItems:"center",gap:14}}>
+            {org?.logo_url?<img src={org.logo_url} alt="Org logo" style={{width:52,height:52,borderRadius:10,objectFit:"cover",border:`1px solid ${P.border}`}}/>
+            :<div style={{width:52,height:52,borderRadius:10,background:P.bg,border:`1px solid ${P.border}`}}/>}
+            <label style={{padding:"8px 16px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:6,fontSize:12,fontWeight:600,color:P.textSec,cursor:"pointer"}}>
+              {logoUploading?"Uploading…":"Upload logo"}
+              <input type="file" accept="image/*" onChange={e=>e.target.files[0]&&uploadLogo(e.target.files[0])} style={{display:"none"}} disabled={logoUploading}/>
+            </label>
+          </div>
+        </div>}
+        </>}
+      </div>
+    </div>
+  </div>);
+};
+
 function DealRoom({prospectShareSlug}) {
   const [session,setSession]=useState(undefined); // undefined=checking, null=signed out, object=signed in
   const [needsOrgSetup,setNeedsOrgSetup]=useState(false);
   const [refreshKey,setRefreshKey]=useState(0);
   const [orgId,setOrgId]=useState(null);
+  const [myRole,setMyRole]=useState(null);
+  const [showSettings,setShowSettings]=useState(false);
   const [loadingDeals,setLoadingDeals]=useState(!prospectShareSlug);
   const [deals,setDeals]=useState([]);
   const [activeId,setActiveId]=useState(null);
@@ -447,7 +601,7 @@ function DealRoom({prospectShareSlug}) {
     (async()=>{
       setLoadingDeals(true);
       try{
-      let {data:mem,error:memErr}=await sb.from("organization_members").select("org_id").eq("user_id",session.user.id).limit(1).maybeSingle();
+      let {data:mem,error:memErr}=await sb.from("organization_members").select("org_id,role").eq("user_id",session.user.id).limit(1).maybeSingle();
       if(cancelled)return;
       if(memErr)throw memErr;
       if(!mem){
@@ -456,13 +610,27 @@ function DealRoom({prospectShareSlug}) {
         // really does need the "name your organization" fallback screen.
         await new Promise(r=>setTimeout(r,1000));
         if(cancelled)return;
-        ({data:mem,error:memErr}=await sb.from("organization_members").select("org_id").eq("user_id",session.user.id).limit(1).maybeSingle());
+        ({data:mem,error:memErr}=await sb.from("organization_members").select("org_id,role").eq("user_id",session.user.id).limit(1).maybeSingle());
         if(cancelled)return;
         if(memErr)throw memErr;
+      }
+      if(!mem){
+        // No membership yet -- check for a pending team invitation before concluding this
+        // is a brand-new user who needs to create their own org. See accept_pending_invite
+        // in 0010_org_invitations.sql for why this only auto-joins a verified email.
+        const {data:joinedOrgId,error:acceptErr}=await sb.rpc("accept_pending_invite");
+        if(cancelled)return;
+        if(acceptErr)throw acceptErr;
+        if(joinedOrgId){
+          ({data:mem,error:memErr}=await sb.from("organization_members").select("org_id,role").eq("user_id",session.user.id).limit(1).maybeSingle());
+          if(cancelled)return;
+          if(memErr)throw memErr;
+        }
       }
       if(!mem){setNeedsOrgSetup(true);setLoadingDeals(false);return;}
       setNeedsOrgSetup(false);
       setOrgId(mem.org_id);
+      setMyRole(mem.role);
       const {data:rows,error:rowsErr}=await sb.from("deals").select("*, stakeholders(*), deal_tasks(*), documents(*)").eq("org_id",mem.org_id).is("archived_at",null);
       if(cancelled)return;
       // A failed query must not be silently treated as "zero deals exist" -- surface it
@@ -732,9 +900,11 @@ select option{background:#fff}`;
       <div style={{padding:"12px 16px",borderTop:`1px solid ${P.border}`,display:"flex",alignItems:"center",gap:10}}>
         <img src={AE.photo} alt={AE.name} style={{width:32,height:32,borderRadius:"50%",objectFit:"cover",border:`2px solid ${P.border}`,flexShrink:0}} onError={e=>{e.target.style.display="none";}}/>
         <div style={{flex:1,minWidth:0}}><div style={{fontSize:12,fontWeight:700,color:P.text}}>{AE.name}</div><div style={{fontSize:11,color:P.textMute,marginTop:1}}>{AE.title}</div></div>
+        {(myRole==="owner"||myRole==="admin")&&<button onClick={()=>setShowSettings(true)} title="Team & Settings" style={{background:"none",border:"none",color:P.textMute,fontSize:14,cursor:"pointer",flexShrink:0}}>⚙</button>}
         <button onClick={()=>sb.auth.signOut()} title="Sign out" style={{background:"none",border:"none",color:P.textMute,fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0}}>Sign out</button>
       </div>
     </div>}
+    {showSettings&&<SettingsModal orgId={orgId} myUserId={session?.user?.id} myRole={myRole} onClose={()=>setShowSettings(false)}/>}
 
     {/* MAIN */}
     <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
