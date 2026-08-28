@@ -112,8 +112,30 @@ function mapDealFromDb(row) {
     // a prospect's deal (loaded straight from get_deal_for_prospect, which never runs that
     // merge) would have contributors===undefined and crash the header's avatar cluster.
     contributors: [],
+    // Same reasoning as contributors above -- only the rep's org-loading effect merges in
+    // deal_risk_signals (rep-only data a prospect has no reason to see anyway). null here,
+    // not undefined, so riskFlags() below has one clear "not loaded" case to check for.
+    risk: null,
   };
 }
+
+// Turns deal.risk into the ordered, human-readable flags the rep actually sees --
+// sidebar dot, header pill, and the Analytics tab's Deal Health section all call this
+// instead of each re-deriving severity/reason text their own way. Thresholds/rules match
+// the spec exactly: no visit in 3 days ("going cold"), no task progress in 7 days
+// ("stalled"), a decision-maker who's never viewed a document ("buyer disengaged").
+function riskFlags(deal) {
+  const r = deal.risk;
+  if (!r) return [];
+  const flags = [];
+  if (r.goingCold) flags.push({ key: "going_cold", label: "Going Cold", severity: "cold", reason: `No prospect activity in ${r.daysSinceVisit} day${r.daysSinceVisit === 1 ? "" : "s"}` });
+  if (r.stalled) flags.push({ key: "stalled", label: "Stalled", severity: "risk", reason: `No task activity in ${r.daysSinceTaskActivity} day${r.daysSinceTaskActivity === 1 ? "" : "s"}` });
+  if (r.buyerDisengaged) flags.push({ key: "buyer_disengaged", label: "Buyer Disengaged", severity: "risk", reason: `${r.disengagedBuyerName}, your decision-maker, hasn't viewed any documents yet` });
+  return flags;
+}
+// Hardcoded (not referencing P) since P isn't defined yet at this point in the file --
+// "on" mirrors P.green/alpine, the other two are the mockup's own risk/cold dot colors.
+const RISK_DOT_COLOR = { cold: "#8A6B63", risk: "#E0A94C", on: "#2C6E63" };
 
 const API = "/api/ai-coach";
 const callClaude = async (sys, usr, max = 1400) => {
@@ -719,12 +741,13 @@ function DealRoom({prospectShareSlug}) {
       const allDocIds=mapped.flatMap(d=>d.content.map(c=>c.id));
       const allDealIds=mapped.map(d=>d.id);
       const allContributorIds=Array.from(new Set(mapped.flatMap(d=>d.contributorIds)));
-      const [{data:viewStats},{data:visits},{data:contributors}]=await Promise.all([
+      const [{data:viewStats},{data:visits},{data:contributors},{data:riskRows}]=await Promise.all([
         allDocIds.length?sb.from("document_view_stats").select("*").in("document_id",allDocIds):{data:[]},
         allDealIds.length?sb.from("deal_visits").select("*, deal_visit_actions(*)").in("deal_id",allDealIds).order("started_at",{ascending:false}):{data:[]},
         // profiles has no direct FK to deals/stakeholders/etc, so this can't be embedded in
         // the main deals query -- same merge-in-JS pattern SettingsModal uses for members.
         allContributorIds.length?sb.from("profiles").select("id,email,full_name").in("id",allContributorIds):{data:[]},
+        allDealIds.length?sb.from("deal_risk_signals").select("*").in("deal_id",allDealIds):{data:[]},
       ]);
       if(cancelled)return;
 
@@ -732,6 +755,7 @@ function DealRoom({prospectShareSlug}) {
       const visitsByDeal={};
       (visits||[]).forEach(v=>{(visitsByDeal[v.deal_id]=visitsByDeal[v.deal_id]||[]).push(v);});
       const profileById=Object.fromEntries((contributors||[]).map(p=>[p.id,p]));
+      const riskByDeal=Object.fromEntries((riskRows||[]).map(r=>[r.deal_id,r]));
 
       const enriched=mapped.map(d=>({
         ...d,
@@ -756,6 +780,11 @@ function DealRoom({prospectShareSlug}) {
           const name=p?.full_name||p?.email||"";
           return {id,name:name||"Unknown",initials:initialsOf(name)||"?"};
         }),
+        risk:(()=>{const r=riskByDeal[d.id];return r?{
+          goingCold:r.going_cold,stalled:r.stalled,buyerDisengaged:!!r.disengaged_buyer_name,
+          daysSinceVisit:r.days_since_visit,daysSinceTaskActivity:r.days_since_task_activity,
+          disengagedBuyerName:r.disengaged_buyer_name,
+        }:null;})(),
       }));
 
       setDeals(enriched);
@@ -1051,9 +1080,10 @@ select option{background:#fff}
       </div>
       <div style={{flex:1,overflowY:"auto"}}>
         <div className="mono" style={{fontSize:10.5,letterSpacing:"0.08em",textTransform:"uppercase",color:"rgba(255,255,255,0.35)",marginBottom:12,padding:"0 6px"}}>Active Deals</div>
-        {deals.map(d=>{const dp=Math.round(d.mapItems.filter(t=>t.status==="complete").length/d.mapItems.length*100);const isA=d.id===activeId;return(
+        {deals.map(d=>{const dp=Math.round(d.mapItems.filter(t=>t.status==="complete").length/d.mapItems.length*100);const isA=d.id===activeId;const dFlags=riskFlags(d);const dotColor=RISK_DOT_COLOR[dFlags[0]?.severity||"on"];return(
           <div key={d.id} className="hd" onClick={()=>{setActiveId(d.id);setAiOpen(false);setAiText("");setTab(viewMode==="prospect"?"welcome":"map");}} style={{padding:"10px 8px",borderRadius:8,background:isA?"rgba(255,255,255,0.07)":"transparent",marginBottom:2,transition:"all .12s"}}>
             <div style={{display:"flex",alignItems:"center",gap:8}}>
+              {d.risk&&<div title={dFlags[0]?.label||"On track"} style={{width:7,height:7,borderRadius:"50%",background:dotColor,flexShrink:0}}/>}
               <div style={{minWidth:0,flex:1}}><div style={{fontSize:13.5,fontWeight:600,color:"#fff",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{d.company}</div><div className="mono" style={{fontSize:11,color:"rgba(255,255,255,0.4)",marginTop:1}}>{d.value}</div></div>
             </div>
             <div style={{marginTop:7}}><div style={{height:3,background:"rgba(255,255,255,0.12)",borderRadius:99,overflow:"hidden"}}><div style={{width:`${dp}%`,height:"100%",background:isA?P.accent:"rgba(255,255,255,0.4)",borderRadius:99}}/></div></div>
@@ -1093,6 +1123,11 @@ select option{background:#fff}
             ))}
             {deal.contributors.length>3&&<div style={{width:30,height:30,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#fff",border:`2px solid ${P.surface}`,marginLeft:-9,background:"#8A9099"}}>+{deal.contributors.length-3}</div>}
           </div>}
+          {deal.risk&&(()=>{const dFlags=riskFlags(deal);const top=dFlags[0];const dotColor=RISK_DOT_COLOR[top?.severity||"on"];return(
+            <div title={dFlags.map(f=>f.reason).join(" · ")||undefined} style={{display:"inline-flex",alignItems:"center",gap:6,background:top?P.amberBg:P.greenBg,color:top?P.amber:P.green,fontSize:12.5,fontWeight:700,padding:"6px 13px 6px 9px",borderRadius:100}}>
+              <span style={{width:6,height:6,borderRadius:"50%",background:dotColor}}/>{top?top.label:"On Track"}
+            </div>
+          );})()}
           <div style={{display:"flex",alignItems:"center",gap:6,padding:"5px 12px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:20}}>
             <span className="mono" style={{fontSize:10,color:P.textMute,fontWeight:600}}>ENGAGEMENT</span>
             <div style={{width:50,height:4,background:P.border,borderRadius:99,overflow:"hidden"}}><div style={{width:`${deal.engagement}%`,height:"100%",background:deal.engagement>60?P.green:P.amber,borderRadius:99}}/></div>
@@ -1350,6 +1385,22 @@ select option{background:#fff}
                   <div style={{fontSize:11,color:P.textMute}}>{sub}</div>
                 </div>))}
             </div>
+            {deal.risk&&<div style={{marginBottom:24}}>
+              <div style={{fontSize:13,fontWeight:700,color:P.text,marginBottom:12}}>Deal Health</div>
+              {riskFlags(deal).length===0?
+                <div style={{display:"flex",alignItems:"center",gap:10,background:P.greenBg,border:`1px solid ${P.greenBorder}`,borderRadius:10,padding:"14px 18px"}}>
+                  <span style={{width:8,height:8,borderRadius:"50%",background:P.green,flexShrink:0}}/>
+                  <span style={{fontSize:13,fontWeight:600,color:P.green}}>On track — no risk signals right now</span>
+                </div>
+              :<div style={{display:"grid",gap:8}}>
+                {riskFlags(deal).map(f=>(
+                  <div key={f.key} style={{display:"flex",alignItems:"center",gap:12,background:P.surface,border:`1px solid ${P.border}`,borderRadius:10,padding:"14px 18px"}}>
+                    <span style={{width:8,height:8,borderRadius:"50%",background:RISK_DOT_COLOR[f.severity],flexShrink:0}}/>
+                    <div><div style={{fontSize:13,fontWeight:700,color:P.text}}>{f.label}</div><div style={{fontSize:12,color:P.textSec,marginTop:1}}>{f.reason}</div></div>
+                  </div>
+                ))}
+              </div>}
+            </div>}
             <div style={{fontSize:13,fontWeight:700,color:P.text,marginBottom:12}}>Activity Log</div>
             {deal.activityLog.map(day=>(
               <div key={day.date} style={{marginBottom:20}}>
