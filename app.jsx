@@ -90,7 +90,7 @@ function mapDealFromDb(row) {
       type: d.file_type,
       uploaded: shortDate(d.created_at),
       category: d.category,
-      url: d.storage_url || "#",
+      storagePath: d.storage_path,
       views: 0,
       viewers: [],
       lastViewed: "Not yet viewed",
@@ -141,7 +141,16 @@ const DESIG_CFG = {
   influencer:{label:"Influencer",color:P.purple,bg:P.purpleBg,border:P.purpleBorder},
   blocker:{label:"Blocker",color:P.red,bg:P.redBg,border:P.redBorder},
 };
-const FILE_ICON = {pptx:{icon:"▤",c:"#C55A11"},xlsx:{icon:"⊞",c:"#1D6F42"},pdf:{icon:"▪",c:"#C00000"},docx:{icon:"≡",c:"#2B579A"},link:{icon:"⌘",c:"#6366F1"}};
+const FILE_ICON = {pptx:{icon:"▤",c:"#C55A11"},xlsx:{icon:"⊞",c:"#1D6F42"},pdf:{icon:"▪",c:"#C00000"},docx:{icon:"≡",c:"#2B579A"},image:{icon:"▧",c:"#7C3AED"},link:{icon:"⌘",c:"#6366F1"}};
+// Mirrors the deal-documents bucket's allowed_mime_types (0012_deal_documents.sql) -- this
+// mapping is just for instant client-side feedback, the bucket itself is the real gate.
+const ALLOWED_DOC_MIME = {
+  "application/pdf":"pdf",
+  "application/msword":"docx","application/vnd.openxmlformats-officedocument.wordprocessingml.document":"docx",
+  "application/vnd.ms-powerpoint":"pptx","application/vnd.openxmlformats-officedocument.presentationml.presentation":"pptx",
+  "application/vnd.ms-excel":"xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":"xlsx",
+  "image/png":"image","image/jpeg":"image","image/gif":"image","image/webp":"image",
+};
 
 const Badge = ({label,color,bg,border,small}) => (
   <span style={{padding:small?"2px 7px":"3px 10px",borderRadius:4,background:bg,border:`1px solid ${border}`,color,fontSize:small?10:11,fontWeight:700,whiteSpace:"nowrap"}}>{label}</span>
@@ -161,6 +170,16 @@ const ProspectLogin = ({deal,shareSlug,onSuccess}) => {
     if(shareSlug){
       // Real external prospect: deal is unknown until this RPC succeeds -- there is no
       // RLS path for an anon caller to read deal data any other way (see 0006 migration).
+      // Sign in anonymously first (if not already) so auth.uid() is populated when the RPC
+      // runs -- that's what lets it record a durable, checkable identity for this prospect
+      // against this deal (prospect_sessions.user_id), which Storage RLS then relies on for
+      // document access (see 0012_deal_documents.sql). Checking for an existing session
+      // first avoids minting a new anonymous user on every retry from the same browser.
+      const {data:{session:existingSession}}=await sb.auth.getSession();
+      if(!existingSession){
+        const {error:anonErr}=await sb.auth.signInAnonymously();
+        if(anonErr){setError("Couldn't start a secure session. Please retry.");setLoading(false);return;}
+      }
       const {data,error:rpcErr}=await sb.rpc("get_deal_for_prospect",{p_share_slug:shareSlug,p_access_code:code,p_email:email});
       if(rpcErr||!data||data.error){setError("Invalid email or access code. Please check with your account executive.");setLoading(false);return;}
       onSuccess(mapDealFromDb(data.deal));
@@ -771,6 +790,37 @@ function DealRoom({prospectShareSlug}) {
     flash("Task added");
   };
 
+  // File-type/size limits are enforced for real by the deal-documents bucket's
+  // allowed_mime_types/file_size_limit (0012_deal_documents.sql) -- this check is just
+  // instant client-side feedback before the round trip, not the actual defense.
+  const uploadDocument=async(file)=>{
+    const fileType=ALLOWED_DOC_MIME[file.type];
+    if(!fileType){flash("That file type isn't supported.");return;}
+    if(file.size>26214400){flash("File is too large (25MB max).");return;}
+    const path=`${orgId}/${deal.id}/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
+    const {error:upErr}=await sb.storage.from("deal-documents").upload(path,file,{contentType:file.type});
+    if(upErr){flash("Upload failed");return;}
+    const {data,error:insErr}=await sb.from("documents").insert({
+      deal_id:deal.id,created_by:session.user.id,title:file.name,file_type:fileType,
+      category:"General",storage_path:path,
+    }).select().single();
+    if(insErr||!data){flash("Couldn't save file record");return;}
+    const mapped={id:data.id,title:data.title,type:data.file_type,uploaded:shortDate(data.created_at),category:data.category,storagePath:data.storage_path,views:0,viewers:[],lastViewed:"Not yet viewed"};
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,content:[...d.content,mapped]}));
+    flash("File added");
+  };
+
+  // Signed URL minted on demand (private bucket, so there's no permanent public URL to
+  // store) -- the necessary difference from the org-logos public-bucket flow in
+  // SettingsModal, which bakes one URL in at upload time.
+  const openDocument=async f=>{
+    if(!f.storagePath){flash("File not available");return;}
+    if(f.type==="link"){window.open(f.storagePath,"_blank","noopener");return;}
+    const {data,error}=await sb.storage.from("deal-documents").createSignedUrl(f.storagePath,300);
+    if(error||!data){flash("Couldn't open file");return;}
+    window.open(data.signedUrl,"_blank","noopener");
+  };
+
   const repTabs=[["map","Action Plan"],["summary","Executive Summary"],["discovery","Discovery"],["content","Content"],["stakeholders","Stakeholders"],["analytics","Analytics"]];
   const prosTabs=[["welcome","Welcome"],["summary","Executive Summary"],["map","Action Plan"],["discovery","Discovery"],["content","Resources"],["stakeholders","Team"]];
   const tabs=viewMode==="prospect"?prosTabs:repTabs;
@@ -1109,7 +1159,9 @@ select option{background:#fff}`;
               <div style={{fontSize:13,color:P.textSec}}>{deal.content.length} files · {deal.content.reduce((a,c)=>a+c.views,0)} total views</div>
               {viewMode==="rep"&&<div style={{display:"flex",gap:8}}>
                 <button onClick={()=>runAI("email")} style={{padding:"6px 12px",border:`1px solid ${P.border}`,borderRadius:6,background:"none",color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer"}}>✦ Draft Follow-up</button>
-                <button style={{padding:"6px 14px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>+ Add File</button>
+                <label style={{padding:"6px 14px",background:P.accent,borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>+ Add File
+                  <input type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,image/*" onChange={e=>e.target.files[0]&&uploadDocument(e.target.files[0])} style={{display:"none"}}/>
+                </label>
               </div>}
             </div>
             <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
@@ -1127,7 +1179,7 @@ select option{background:#fff}`;
                       <span style={{fontSize:11,color:f.views>0?P.accent:P.textMute,fontWeight:700}}>{f.views>0?`${f.views} views`:"Not viewed"}</span>
                     </div>
                   </div>
-                  <a href={f.url} style={{padding:"7px 14px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,fontWeight:600,textDecoration:"none",flexShrink:0}}>Open →</a>
+                  <button onClick={()=>openDocument(f)} style={{padding:"7px 14px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer",flexShrink:0}}>Open →</button>
                 </div>);})}
             </div>
           </div>}
