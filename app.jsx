@@ -706,7 +706,7 @@ select option{background:#fff}`;
               <span style={{fontSize:13,color:P.textSec,fontWeight:500}}>{deal.title}</span>
               {viewMode==="prospect"&&<span style={{padding:"2px 8px",background:P.greenBg,border:`1px solid ${P.greenBorder}`,borderRadius:20,fontSize:10,fontWeight:700,color:P.green}}>PROSPECT VIEW</span>}
             </div>
-            <div style={{display:"flex",gap:14,marginTop:3}}>{[deal.industry,deal.value,`Close ${deal.closeDate}`,deal.contact].map((v,i)=><span key={i} style={{fontSize:11,color:P.textMute}}>{v}</span>)}</div>
+            <div style={{display:"flex",gap:14,marginTop:3}}>{[deal.industry,deal.value,deal.closeDate?`Close ${deal.closeDate}`:null,deal.contact].filter(Boolean).map((v,i)=><span key={i} style={{fontSize:11,color:P.textMute}}>{v}</span>)}</div>
           </div>
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
