@@ -49,7 +49,7 @@ export default async (req: Request, context: Context) => {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-5",
         max_tokens: Math.min(max_tokens || 1400, 2000),
         system,
         messages,

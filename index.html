@@ -79,7 +79,11 @@
     window.addEventListener('unhandledrejection', e => showFatalError(e.reason && (e.reason.stack || e.reason.message) || e.reason));
   </script>
 
-  <script type="text/babel" data-presets="react" src="app.jsx"></script>
+  <!-- Absolute path, not relative -- a prospect share link (/d/{slug}) is a nested path,
+       and a relative "app.jsx" resolves to /d/app.jsx there. The SPA catch-all redirect
+       (_redirects: "/* /index.html 200") then serves back this HTML document instead of a
+       clean 404, and the browser tries to parse it as JavaScript and fails. -->
+  <script type="text/babel" data-presets="react" src="/app.jsx"></script>
 
   <script>
     // Mount the app once Babel has processed app.jsx
