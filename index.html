@@ -3,10 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DealRoom — Enterprise Sales Platform</title>
+  <title>myBivy — Enterprise Sales Platform</title>
   <meta name="description" content="Private deal workspace for enterprise sales collaboration." />
-  <!-- Favicon -->
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231A4FBA'/><text y='22' x='5' font-size='18' font-family='sans-serif' font-weight='800' fill='white'>D</text></svg>" />
+  <!-- Favicon: same contour-lines mark used in the app's sidebar brand lockup, on the ink background -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231B1F23'/><path d='M4 20 Q10 17.5 15 18.7 Q20 20 29 14.7' stroke='%23D65F3C' stroke-width='2.2' fill='none' stroke-linecap='round'/><path d='M6.5 14 Q11.5 11.3 15 12.7 Q18.5 14 25.5 9.3' stroke='%23F4F2ED' stroke-width='2.2' fill='none' stroke-linecap='round'/></svg>" />
+  <!-- Brand fonts: Barlow Condensed (headings), Inter (body), JetBrains Mono (labels/data) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
   <!-- React + ReactDOM -->
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -16,25 +20,25 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Plus Jakarta Sans', 'Segoe UI', sans-serif; background: #F7F8FA; }
+    body { font-family: 'Inter', 'Segoe UI', sans-serif; background: #F6F5F2; }
     #root { min-height: 100vh; }
     /* Loading screen */
     #loading {
-      position: fixed; inset: 0; background: #F7F8FA;
+      position: fixed; inset: 0; background: #1B1F23;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
       z-index: 9999; transition: opacity 0.4s ease;
     }
     #loading .logo {
-      width: 52px; height: 52px; background: linear-gradient(135deg, #1A4FBA, #3B6FE8);
+      width: 52px; height: 52px; background: rgba(255,255,255,0.08);
       border-radius: 13px; display: flex; align-items: center; justify-content: center;
-      font-size: 24px; font-weight: 800; color: white; margin-bottom: 18px;
-      box-shadow: 0 8px 32px rgba(26,79,186,0.25);
+      margin-bottom: 18px;
     }
-    #loading h1 { font-size: 20px; font-weight: 800; color: #111827; letter-spacing: -0.5px; margin-bottom: 6px; }
-    #loading p { font-size: 13px; color: #9CA3AF; }
+    #loading .logo svg { width: 28px; height: 28px; }
+    #loading h1 { font-family: 'Barlow Condensed', sans-serif; font-size: 22px; font-weight: 700; color: #fff; letter-spacing: -0.3px; margin-bottom: 6px; }
+    #loading p { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(255,255,255,0.4); }
     #loading .dots span {
       display: inline-block; width: 7px; height: 7px; border-radius: 50%;
-      background: #1A4FBA; margin: 0 3px; margin-top: 20px;
+      background: #D65F3C; margin: 0 3px; margin-top: 20px;
       animation: bounce 1.2s ease infinite;
     }
     #loading .dots span:nth-child(2) { animation-delay: 0.2s; }
@@ -46,8 +50,8 @@
 
   <!-- Loading screen (hidden once app mounts) -->
   <div id="loading">
-    <div class="logo">D</div>
-    <h1>DealRoom</h1>
+    <div class="logo"><svg viewBox="0 0 24 24" fill="none"><path d="M2 15 Q7 13 11 14 Q15 15 22 11" stroke="#D65F3C" stroke-width="1.8" stroke-linecap="round"/><path d="M4 10.5 Q8 8.5 11 9.5 Q14 10.5 19 7" stroke="#F4F2ED" stroke-width="1.8" stroke-linecap="round"/></svg></div>
+    <h1>myBivy</h1>
     <p>Enterprise Sales Platform</p>
     <div class="dots"><span></span><span></span><span></span></div>
   </div>
@@ -66,9 +70,9 @@
       root.innerHTML = '';
       const box = document.createElement('div');
       box.style.cssText = 'min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;text-align:center;font-family:sans-serif;';
-      box.innerHTML = '<div style="font-size:16px;font-weight:700;color:#111827">Something went wrong loading DealRoom</div>'
-        + '<div style="font-size:13px;color:#4B5563;max-width:480px;font-family:monospace;white-space:pre-wrap">' + String(message).replace(/</g, '&lt;') + '</div>'
-        + '<button onclick="window.location.reload()" style="padding:10px 20px;background:#1A4FBA;border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer">Reload</button>';
+      box.innerHTML = '<div style="font-size:16px;font-weight:700;color:#252A2E">Something went wrong loading myBivy</div>'
+        + '<div style="font-size:13px;color:#6B7178;max-width:480px;font-family:monospace;white-space:pre-wrap">' + String(message).replace(/</g, '&lt;') + '</div>'
+        + '<button onclick="window.location.reload()" style="padding:10px 20px;background:#D65F3C;border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer">Reload</button>';
       root.appendChild(box);
     }
     window.addEventListener('error', e => showFatalError(e.error ? (e.error.stack || e.error.message) : e.message));

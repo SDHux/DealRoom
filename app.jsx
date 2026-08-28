@@ -96,6 +96,17 @@ function mapDealFromDb(row) {
       lastViewed: "Not yet viewed",
     })),
     activityLog: [],
+    // Who's actually touched this deal -- the header's avatar cluster. Derived from the
+    // created_by already recorded on the deal itself and every stakeholder/task/document
+    // under it (no new column, no "assign a rep to a deal" feature -- just a distinct set
+    // of ids), resolved to real names/initials once we have the org's profiles (see the
+    // deals-loading effect below).
+    contributorIds: Array.from(new Set([
+      row.created_by,
+      ...(row.stakeholders || []).map(s => s.created_by),
+      ...(row.deal_tasks || []).map(t => t.created_by),
+      ...(row.documents || []).map(d => d.created_by),
+    ].filter(Boolean))),
   };
 }
 
@@ -107,39 +118,49 @@ const callClaude = async (sys, usr, max = 1400) => {
   const d = await r.json(); return d.text || "";
 };
 
+// myBivy / SRENE brand palette. Keys are kept from the pre-rebrand palette so every
+// existing `P.accent`/`P.bg`/etc. usage site below picks up the new look automatically --
+// only the hex values changed, not the shape of this object. `purple`/`teal` (no longer
+// part of the brand system) are remapped to neutral-ink and alpine respectively wherever
+// they were previously used for decorative variety, not semantic meaning.
 const P = {
-  bg:"#F7F8FA", surface:"#FFFFFF", border:"#E4E7EE", borderDark:"#CDD1DC",
-  accent:"#1A4FBA", accentLight:"#EEF3FF", accentMid:"#3B6FE8",
-  text:"#111827", textSec:"#4B5563", textMute:"#9CA3AF",
-  green:"#059669", greenBg:"#ECFDF5", greenBorder:"#A7F3D0",
-  amber:"#B45309", amberBg:"#FFFBEB", amberBorder:"#FCD34D",
+  bg:"#F6F5F2", surface:"#FFFFFF", border:"#E2E0DA", borderDark:"#C7C2B8",
+  accent:"#D65F3C", accentLight:"#FBE9E2", accentMid:"#B94B2C",
+  text:"#252A2E", textSec:"#6B7178", textMute:"#6B7178",
+  green:"#2C6E63", greenBg:"#E1EEEC", greenBorder:"#BFDBD4",
+  amber:"#96631F", amberBg:"#FBF1DE", amberBorder:"#F0D9A8",
   red:"#DC2626", redBg:"#FEF2F2", redBorder:"#FECACA",
-  purple:"#7C3AED", purpleBg:"#F5F3FF", purpleBorder:"#DDD6FE",
-  teal:"#0D9488", tealBg:"#F0FDFA", tealBorder:"#99F6E4",
+  purple:"#1B1F23", purpleBg:"#EFEDE8", purpleBorder:"#E2E0DA",
+  teal:"#2C6E63", tealBg:"#E1EEEC", tealBorder:"#BFDBD4",
+  // New brand-specific tokens (mockup :root block)
+  ink:"#1B1F23", inkSoft:"#262C31", chalk:"#F4F2ED",
+  ropeBorder:"#F0C9B7", amberDot:"#E0A94C",
+  fontDisplay:"'Barlow Condensed',sans-serif", fontBody:"'Inter','Segoe UI',sans-serif", fontMono:"'JetBrains Mono',monospace",
 };
+const LOGO_MARK = (
+  <svg viewBox="0 0 24 24" fill="none">
+    <path d="M2 15 Q7 13 11 14 Q15 15 22 11" stroke="#D65F3C" strokeWidth="1.8" strokeLinecap="round"/>
+    <path d="M4 10.5 Q8 8.5 11 9.5 Q14 10.5 19 7" stroke="#F4F2ED" strokeWidth="1.8" strokeLinecap="round"/>
+  </svg>
+);
 
 const AE = { name:"Mark Huckins", title:"Sr. Account Executive", company:"Salsify", email:"mark.huckins@gmail.com", phone:"+1-858-752-4321", linkedin:"https://linkedin.com/in/markhuckins", initials:"MH",
   photo:"https://media.licdn.com/dms/image/v2/D5603AQGEzOXSHDFOqA/profile-displayphoto-shrink_200_200/profile-displayphoto-shrink_200_200/0/1699997107933?e=2147483647&v=beta&t=IymYW4hFsxj3t0BKhS4a9B-HxCFjzjBm1V9_QNUcbAs" };
 
 const PHASES_ALL = ["Value Alignment","Product Demo","Trial Sessions","Business Case","Paper Process"];
 const PHASES_NO_TRIAL = ["Value Alignment","Product Demo","Business Case","Paper Process"];
-const PHASE_CFG = {
-  "Value Alignment":{color:P.accent,bg:P.accentLight,border:"#BFDBFE",dot:P.accentMid},
-  "Product Demo":{color:P.amber,bg:P.amberBg,border:P.amberBorder,dot:P.amber},
-  "Trial Sessions":{color:P.teal,bg:P.tealBg,border:P.tealBorder,dot:P.teal},
-  "Business Case":{color:P.purple,bg:P.purpleBg,border:P.purpleBorder,dot:P.purple},
-  "Paper Process":{color:P.green,bg:P.greenBg,border:P.greenBorder,dot:P.green},
-};
+// Phase headers are plain uppercase mono labels in the brand system (no color-coded pill
+// per phase) -- see the mockup's .phase-name, which is deliberately un-colored.
 const STATUS_CFG = {
   complete:{text:P.green,bg:P.greenBg,border:P.greenBorder,label:"Complete"},
   "in-progress":{text:P.amber,bg:P.amberBg,border:P.amberBorder,label:"In Progress"},
-  pending:{text:P.textMute,bg:"#F9FAFB",border:P.border,label:"Pending"},
+  pending:{text:P.textMute,bg:P.bg,border:P.border,label:"Pending"},
 };
 const DESIG_CFG = {
   champion:{label:"Champion",color:P.green,bg:P.greenBg,border:P.greenBorder},
-  "decision-maker":{label:"Decision Maker",color:P.accent,bg:P.accentLight,border:"#BFDBFE"},
+  "decision-maker":{label:"Decision Maker",color:P.accent,bg:P.accentLight,border:P.ropeBorder},
   influencer:{label:"Influencer",color:P.purple,bg:P.purpleBg,border:P.purpleBorder},
-  blocker:{label:"Blocker",color:P.red,bg:P.redBg,border:P.redBorder},
+  blocker:{label:"Blocker",color:P.amber,bg:P.amberBg,border:P.amberDot},
 };
 const FILE_ICON = {pptx:{icon:"▤",c:"#C55A11"},xlsx:{icon:"⊞",c:"#1D6F42"},pdf:{icon:"▪",c:"#C00000"},docx:{icon:"≡",c:"#2B579A"},image:{icon:"▧",c:"#7C3AED"},link:{icon:"⌘",c:"#6366F1"}};
 // Mirrors the deal-documents bucket's allowed_mime_types (0012_deal_documents.sql) -- this
@@ -189,22 +210,22 @@ const ProspectLogin = ({deal,shareSlug,onSuccess}) => {
       setTimeout(()=>{if(code.toUpperCase()===deal.accessCode&&email.includes("@")){onSuccess(email);}else{setError("Invalid email or access code. Please check with your account executive.");setLoading(false);}},600);
     }
   };
-  return (<div style={{flex:1,minHeight:"100vh",background:"linear-gradient(135deg,#F0F4FF 0%,#F7F8FA 60%,#EEF3FF 100%)",display:"flex",alignItems:"center",justifyContent:"center"}}>
-    <div style={{width:440,background:P.surface,borderRadius:20,padding:"44px 40px",boxShadow:"0 20px 60px rgba(26,79,186,0.12)",border:`1px solid ${P.border}`}}>
+  return (<div style={{flex:1,minHeight:"100vh",background:"linear-gradient(135deg,#FBE9E2 0%,#F6F5F2 60%,#E1EEEC 100%)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+    <div style={{width:440,background:P.surface,borderRadius:20,padding:"44px 40px",boxShadow:"0 20px 60px rgba(27,31,35,0.10)",border:`1px solid ${P.border}`}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:32}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <div style={{width:36,height:36,background:`linear-gradient(135deg,${P.accent},${P.accentMid})`,borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center"}}><span style={{color:"#fff",fontSize:16,fontWeight:800}}>D</span></div>
-          <span style={{fontSize:16,fontWeight:800,color:P.text}}>DealRoom</span>
+          <div style={{width:36,height:36,background:P.ink,borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{width:20,height:20}}>{LOGO_MARK}</div></div>
+          <span className="headline" style={{fontSize:17,color:P.text}}>myBivy</span>
         </div>
         {/* Company branding only shown when we already have deal data (rep preview) --
             a real prospect hasn't authenticated yet, so we don't know or leak which
             company this link belongs to until after a successful code check. */}
         {deal&&<div style={{display:"flex",alignItems:"center",gap:8}}>
-          <div style={{width:28,height:28,borderRadius:6,background:deal.color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:800,color:"#fff"}}>{deal.logo}</div>
+          <div style={{width:28,height:28,borderRadius:6,background:P.accentLight,display:"flex",alignItems:"center",justifyContent:"center"}}><span className="headline" style={{fontSize:10,color:P.accentMid}}>{deal.logo}</span></div>
           <span style={{fontSize:12,fontWeight:600,color:P.textSec}}>{deal.company}</span>
         </div>}
       </div>
-      <div style={{fontSize:24,fontWeight:800,color:P.text,letterSpacing:"-0.6px",marginBottom:6}}>Access your Deal Room</div>
+      <div className="headline" style={{fontSize:26,color:P.text,marginBottom:6}}>Access your Deal Room</div>
       <div style={{fontSize:13,color:P.textSec,lineHeight:1.6,marginBottom:28}}>Your account executive has prepared a private workspace for your evaluation. Enter your credentials to access.</div>
       <div style={{marginBottom:14}}><label style={{fontSize:11,fontWeight:700,color:P.textSec,textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:5}}>Your Work Email</label>
         <input value={email} onChange={e=>{setEmail(e.target.value);setError("");}} onKeyDown={e=>e.key==="Enter"&&go()} placeholder="you@company.com" type="email" style={{width:"100%",border:`1px solid ${P.border}`,borderRadius:8,padding:"11px 14px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"}}/></div>
@@ -212,7 +233,7 @@ const ProspectLogin = ({deal,shareSlug,onSuccess}) => {
         <input value={code} onChange={e=>{setCode(e.target.value);setError("");}} onKeyDown={e=>e.key==="Enter"&&go()} placeholder="Provided by your AE" style={{width:"100%",border:`1px solid ${error?P.red:P.border}`,borderRadius:8,padding:"11px 14px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none",letterSpacing:"0.08em"}}/>
         {error&&<div style={{fontSize:11,color:P.red,marginTop:6}}>{error}</div>}</div>
       <button onClick={go} disabled={loading||!email||!code} style={{width:"100%",padding:"12px",background:loading||!email||!code?P.border:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:14,fontWeight:700,cursor:loading||!email||!code?"not-allowed":"pointer"}}>{loading?"Verifying…":"Access My Deal Room →"}</button>
-      <div style={{display:"flex",alignItems:"center",gap:8,marginTop:20,padding:"12px 14px",background:P.accentLight,borderRadius:8,border:`1px solid #BFDBFE`}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginTop:20,padding:"12px 14px",background:P.accentLight,borderRadius:8,border:`1px solid #F0C9B7`}}>
         <span style={{fontSize:14}}>🔒</span><span style={{fontSize:11,color:P.accent,fontWeight:500,lineHeight:1.5}}>This workspace is private. Only authorized participants with a valid access code can enter.</span>
       </div>
       <div style={{textAlign:"center",marginTop:18,fontSize:11,color:P.textMute}}>No code? Contact <span style={{color:P.accent,fontWeight:600}}>{AE.email}</span></div>
@@ -237,26 +258,18 @@ const ProcessTimeline = ({deal}) => {
     if(phTasks.length===0)return "pending";
     return phTasks.every(t=>t.status==="complete")?"complete":"active";
   });
-  let anchorIdx=-1;
-  phaseStatuses.forEach((st,i)=>{if(st!=="pending")anchorIdx=i;});
-  const progW=anchorIdx<0?0:(steps.length>1?Math.min(anchorIdx/(steps.length-1)*86,86):0);
   return (
-    <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:14,padding:"28px 36px",marginBottom:24}}>
-      <div style={{fontSize:13,fontWeight:600,color:P.textSec,marginBottom:28}}>Track where we are in the process at any given time</div>
-      <div style={{position:"relative",display:"flex",alignItems:"flex-start"}}>
-        <div style={{position:"absolute",top:20,left:"7%",right:"7%",height:2,background:P.border,zIndex:0}}/>
-        <div style={{position:"absolute",top:20,left:"7%",height:2,width:`${progW}%`,background:`linear-gradient(90deg,${P.teal},${P.accentMid})`,zIndex:1,transition:"width .6s ease"}}/>
+    <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:14,padding:"28px 36px",marginBottom:24,boxShadow:"0 1px 2px rgba(27,31,35,0.05), 0 12px 32px -12px rgba(27,31,35,0.16)"}}>
+      <div style={{fontSize:13,fontWeight:600,color:P.textMute,marginBottom:28}}>Track where we are in the process at any given time</div>
+      <div style={{display:"flex",alignItems:"flex-start"}}>
         {steps.map((step,i)=>{
-          const isCom=phaseStatuses[i]==="complete",isAct=phaseStatuses[i]==="active",isUp=!isCom&&!isAct;
-          return (<div key={step.key} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",position:"relative",zIndex:2}}>
-            <div style={{width:42,height:42,borderRadius:"50%",background:isCom?P.teal:isAct?P.accentMid:"#E5E7EB",border:`3px solid ${isCom?P.teal:isAct?P.accent:P.border}`,display:"flex",alignItems:"center",justifyContent:"center",boxShadow:isAct?`0 0 0 8px ${P.accentLight},0 0 0 4px ${P.accentMid}30`:"none"}}>
-              {isCom?<span style={{color:"#fff",fontSize:14,fontWeight:800}}>✓</span>:isAct?<div style={{width:12,height:12,borderRadius:"50%",background:"#fff"}}/>:<div style={{width:8,height:8,borderRadius:"50%",background:P.textMute}}/>}
+          const isCom=phaseStatuses[i]==="complete",isAct=phaseStatuses[i]==="active";
+          return (<div key={step.key} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",textAlign:"center",position:"relative"}}>
+            {i<steps.length-1&&<div style={{position:"absolute",top:15,left:"50%",width:"100%",height:2,background:isCom?P.accent:P.border,zIndex:0}}/>}
+            <div style={{width:30,height:30,borderRadius:"50%",background:isCom?P.accent:P.surface,border:`2.5px solid ${isCom||isAct?P.accent:P.border}`,display:"flex",alignItems:"center",justifyContent:"center",zIndex:1,marginBottom:10,flexShrink:0}}>
+              {isCom&&<svg width="13" height="13" viewBox="0 0 10 10" fill="none"><path d="M1.5 5l2.3 2.3L8.5 2.5" stroke="#fff" strokeWidth="1.6" strokeLinecap="round"/></svg>}
             </div>
-            <div style={{width:1,height:18,background:isUp?P.border:P.teal,margin:"4px 0"}}/>
-            <div style={{textAlign:"center",maxWidth:110,padding:"0 4px"}}>
-              <div style={{fontSize:12,fontWeight:800,color:isUp?P.textMute:P.text,marginBottom:3}}>{step.label}</div>
-              <div style={{fontSize:10,color:P.textMute,lineHeight:1.4}}>{step.desc}</div>
-            </div>
+            <div style={{fontSize:12.5,fontWeight:600,color:isCom?P.text:isAct?P.accentMid:P.textMute,maxWidth:110,padding:"0 4px"}}>{step.label}</div>
           </div>);
         })}
       </div>
@@ -295,7 +308,7 @@ const DealCreator = ({onSave,onClose}) => {
   return (<div style={{position:"fixed",inset:0,background:"rgba(17,24,39,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
     <div style={{background:P.surface,borderRadius:16,width:680,maxHeight:"88vh",overflowY:"auto",boxShadow:"0 24px 64px rgba(0,0,0,0.16)"}}>
       <div style={{padding:"20px 24px 16px",borderBottom:`1px solid ${P.border}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-        <div><div style={{fontSize:17,fontWeight:800,color:P.text}}>Create Deal Room</div><div style={{fontSize:12,color:P.textSec,marginTop:2}}>Step {step} of 3 · {["Choose Method","AI Generation","Review & Save"][step-1]}</div></div>
+        <div><div className="headline" style={{fontSize:19,color:P.text}}>Create Deal Room</div><div style={{fontSize:12,color:P.textSec,marginTop:2}}>Step {step} of 3 · {["Choose Method","AI Generation","Review & Save"][step-1]}</div></div>
         <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,color:P.textMute,cursor:"pointer"}}>×</button>
       </div>
       <div style={{padding:24}}>
@@ -321,7 +334,7 @@ const DealCreator = ({onSave,onClose}) => {
           </div>
           <div style={{marginBottom:14}}><label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:P.textSec,cursor:"pointer"}}><input type="checkbox" checked={draft.includeTrialSessions} onChange={e=>setDraft(p=>({...p,includeTrialSessions:e.target.checked}))} style={{width:14,height:14}}/>Include Trial Sessions phase in evaluation journey</label></div>
           <div style={{marginBottom:14}}><label style={lbl}>Welcome Message</label><textarea value={draft.welcomeMsg||""} onChange={e=>setDraft(p=>({...p,welcomeMsg:e.target.value}))} style={{...inp,height:70,resize:"vertical"}}/></div>
-          {draft.discovery.challenges.length>0&&<div style={{background:P.accentLight,border:`1px solid #BFDBFE`,borderRadius:8,padding:"12px 16px",marginBottom:12}}><div style={{fontSize:11,fontWeight:700,color:P.accent,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>AI Extracted — Challenges</div>{draft.discovery.challenges.map((c,i)=><div key={i} style={{fontSize:12,color:P.textSec,marginBottom:3}}>· {c}</div>)}</div>}
+          {draft.discovery.challenges.length>0&&<div style={{background:P.accentLight,border:`1px solid #F0C9B7`,borderRadius:8,padding:"12px 16px",marginBottom:12}}><div style={{fontSize:11,fontWeight:700,color:P.accent,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>AI Extracted — Challenges</div>{draft.discovery.challenges.map((c,i)=><div key={i} style={{fontSize:12,color:P.textSec,marginBottom:3}}>· {c}</div>)}</div>}
           {draft.stakeholders.length>0&&<div style={{background:P.greenBg,border:`1px solid ${P.greenBorder}`,borderRadius:8,padding:"12px 16px",marginBottom:14}}><div style={{fontSize:11,fontWeight:700,color:P.green,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>AI Extracted — Stakeholders ({draft.stakeholders.length})</div>{draft.stakeholders.map(s=><div key={s.id} style={{fontSize:12,color:P.textSec,marginBottom:3}}>· {s.name} — {s.role} ({s.designation})</div>)}</div>}
           <div style={{display:"flex",gap:10}}>
             <button onClick={()=>{if(!draft.company)return;onSave({...draft,id:Date.now(),logo:draft.logo||draft.company.slice(0,2).toUpperCase(),engagement:50});}} style={{flex:1,padding:"11px 20px",background:P.accent,border:"none",borderRadius:7,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>Save Deal Room →</button>
@@ -370,19 +383,19 @@ const AuthGate = () => {
   const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:8,padding:"11px 14px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
   const lbl={fontSize:11,fontWeight:700,color:P.textSec,textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:5};
 
-  return (<div style={{flex:1,minHeight:"100vh",background:"linear-gradient(135deg,#F0F4FF 0%,#F7F8FA 60%,#EEF3FF 100%)",display:"flex",alignItems:"center",justifyContent:"center"}}>
-    <div style={{width:420,background:P.surface,borderRadius:20,padding:"44px 40px",boxShadow:"0 20px 60px rgba(26,79,186,0.12)",border:`1px solid ${P.border}`}}>
+  return (<div style={{flex:1,minHeight:"100vh",background:"linear-gradient(135deg,#FBE9E2 0%,#F6F5F2 60%,#E1EEEC 100%)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+    <div style={{width:420,background:P.surface,borderRadius:20,padding:"44px 40px",boxShadow:"0 20px 60px rgba(27,31,35,0.10)",border:`1px solid ${P.border}`}}>
       <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:28}}>
-        <div style={{width:36,height:36,background:`linear-gradient(135deg,${P.accent},${P.accentMid})`,borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center"}}><span style={{color:"#fff",fontSize:16,fontWeight:800}}>D</span></div>
-        <span style={{fontSize:16,fontWeight:800,color:P.text}}>DealRoom</span>
+        <div style={{width:36,height:36,background:P.ink,borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{width:20,height:20}}>{LOGO_MARK}</div></div>
+        <span className="headline" style={{fontSize:17,color:P.text}}>myBivy</span>
       </div>
 
       {mode==="check-email"?(<>
-        <div style={{fontSize:20,fontWeight:800,color:P.text,marginBottom:8}}>Check your email</div>
+        <div className="headline" style={{fontSize:22,color:P.text,marginBottom:8}}>Check your email</div>
         <div style={{fontSize:13,color:P.textSec,lineHeight:1.6}}>We sent a confirmation link to <strong>{email}</strong>. Click it, then sign in below.</div>
         <button onClick={()=>setMode("signin")} style={{width:"100%",padding:"12px",marginTop:20,background:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>Back to Sign In</button>
       </>):(<>
-        <div style={{fontSize:22,fontWeight:800,color:P.text,letterSpacing:"-0.5px",marginBottom:24}}>{mode==="signup"?"Create your workspace":"Sign in"}</div>
+        <div className="headline" style={{fontSize:24,color:P.text,marginBottom:24}}>{mode==="signup"?"Create your workspace":"Sign in"}</div>
         {mode==="signup"&&<div style={{marginBottom:14}}><label style={lbl}>Organization Name</label>
           <input value={orgName} onChange={e=>setOrgName(e.target.value)} placeholder="Acme Sales Team" style={inp}/></div>}
         {mode==="signup"&&<div style={{marginBottom:14}}><label style={lbl}>Your Name</label>
@@ -422,8 +435,8 @@ const NameYourOrg = ({onDone}) => {
   };
   const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:8,padding:"11px 14px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
   return (<div style={{flex:1,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}>
-    <div style={{width:400,background:P.surface,borderRadius:20,padding:"40px",boxShadow:"0 20px 60px rgba(26,79,186,0.12)",border:`1px solid ${P.border}`}}>
-      <div style={{fontSize:20,fontWeight:800,color:P.text,marginBottom:8}}>Name your organization</div>
+    <div style={{width:400,background:P.surface,borderRadius:20,padding:"40px",boxShadow:"0 20px 60px rgba(27,31,35,0.10)",border:`1px solid ${P.border}`}}>
+      <div className="headline" style={{fontSize:22,color:P.text,marginBottom:8}}>Name your organization</div>
       <div style={{fontSize:13,color:P.textSec,marginBottom:20,lineHeight:1.6}}>One more step before you can start tracking deals.</div>
       <input value={orgName} onChange={e=>setOrgName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="Acme Sales Team" style={inp}/>
       {error&&<div style={{fontSize:11,color:P.red,marginTop:6}}>{error}</div>}
@@ -501,7 +514,7 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
   return (<div style={{position:"fixed",inset:0,background:"rgba(17,24,39,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
     <div style={{background:P.surface,borderRadius:16,width:620,maxHeight:"85vh",overflowY:"auto",boxShadow:"0 24px 64px rgba(0,0,0,0.16)"}}>
       <div style={{padding:"20px 24px 0",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-        <div style={{fontSize:17,fontWeight:800,color:P.text}}>Team &amp; Settings</div>
+        <div className="headline" style={{fontSize:19,color:P.text}}>Team &amp; Settings</div>
         <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,color:P.textMute,cursor:"pointer"}}>×</button>
       </div>
       <div style={{padding:"14px 24px 0",display:"flex",gap:4,borderBottom:`1px solid ${P.border}`}}>
@@ -520,7 +533,7 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
                 <div style={{fontSize:13,fontWeight:600,color:P.text}}>{m.fullName||m.email||"Unknown"}</div>
                 <div style={{fontSize:11,color:P.textMute}}>{m.email}</div>
               </div>
-              {m.user_id===myUserId?<Badge small label={m.role} color={P.accent} bg={P.accentLight} border="#BFDBFE"/>
+              {m.user_id===myUserId?<Badge small label={m.role} color={P.accent} bg={P.accentLight} border="#F0C9B7"/>
               :canManage(m.role)?(<>
                 <select value={m.role} onChange={e=>changeRole(m.id,e.target.value)} style={{...inp,width:110,padding:"5px 8px",fontSize:11}}>
                   {myRole==="owner"&&<option value="admin">admin</option>}
@@ -664,15 +677,20 @@ function DealRoom({prospectShareSlug}) {
       // when that instrumentation gets built.
       const allDocIds=mapped.flatMap(d=>d.content.map(c=>c.id));
       const allDealIds=mapped.map(d=>d.id);
-      const [{data:viewStats},{data:visits}]=await Promise.all([
+      const allContributorIds=Array.from(new Set(mapped.flatMap(d=>d.contributorIds)));
+      const [{data:viewStats},{data:visits},{data:contributors}]=await Promise.all([
         allDocIds.length?sb.from("document_view_stats").select("*").in("document_id",allDocIds):{data:[]},
         allDealIds.length?sb.from("deal_visits").select("*, deal_visit_actions(*)").in("deal_id",allDealIds).order("started_at",{ascending:false}):{data:[]},
+        // profiles has no direct FK to deals/stakeholders/etc, so this can't be embedded in
+        // the main deals query -- same merge-in-JS pattern SettingsModal uses for members.
+        allContributorIds.length?sb.from("profiles").select("id,email,full_name").in("id",allContributorIds):{data:[]},
       ]);
       if(cancelled)return;
 
       const statsByDoc=Object.fromEntries((viewStats||[]).map(v=>[v.document_id,v]));
       const visitsByDeal={};
       (visits||[]).forEach(v=>{(visitsByDeal[v.deal_id]=visitsByDeal[v.deal_id]||[]).push(v);});
+      const profileById=Object.fromEntries((contributors||[]).map(p=>[p.id,p]));
 
       const enriched=mapped.map(d=>({
         ...d,
@@ -692,6 +710,11 @@ function DealRoom({prospectShareSlug}) {
             return acc;
           },{})
         ).map(([date,entries])=>({date,entries})),
+        contributors:d.contributorIds.map(id=>{
+          const p=profileById[id];
+          const name=p?.full_name||p?.email||"";
+          return {id,name:name||"Unknown",initials:initialsOf(name)||"?"};
+        }),
       }));
 
       setDeals(enriched);
@@ -837,7 +860,7 @@ function DealRoom({prospectShareSlug}) {
 
   const inpS={border:`1px solid ${P.border}`,borderRadius:6,padding:"8px 10px",fontSize:12,color:P.text,background:P.surface,fontFamily:"inherit",outline:"none"};
 
-  const CSS=`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
+  const CSS=`@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
 ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:${P.bg}}::-webkit-scrollbar-thumb{background:${P.borderDark};border-radius:3px}
 input,select,textarea{font-family:inherit;outline:none;}
@@ -845,13 +868,15 @@ input:focus,select:focus,textarea:focus{border-color:${P.accent}!important;box-s
 .hr:hover{background:${P.bg}!important}.hd:hover{background:${P.bg}!important;cursor:pointer}.hv:hover{opacity:.82}
 .fade{animation:fi .2s ease}@keyframes fi{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 .shim>div{animation:sh 1.5s ease infinite alternate;background:linear-gradient(90deg,#f1f5f9,#e9edf5,#f1f5f9);background-size:200%;border-radius:4px;}@keyframes sh{from{background-position:0%}to{background-position:100%}}
-select option{background:#fff}`;
+select option{background:#fff}
+.mono{font-family:${P.fontMono};}
+.headline{font-family:${P.fontDisplay};font-weight:700;}`;
 
   const LoadingScreen=()=><div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:P.textMute,fontSize:13}}>Loading…</div>;
 
   if(initError){
-    return <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:12,padding:24,textAlign:"center",fontFamily:"'Plus Jakarta Sans','Segoe UI',sans-serif"}}>
-      <div style={{fontSize:16,fontWeight:700,color:P.text}}>Couldn't load DealRoom</div>
+    return <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:12,padding:24,textAlign:"center",fontFamily:"'Inter','Segoe UI',sans-serif"}}>
+      <div style={{fontSize:16,fontWeight:700,color:P.text}}>Couldn't load myBivy</div>
       <div style={{fontSize:13,color:P.textSec,maxWidth:480,fontFamily:"monospace",whiteSpace:"pre-wrap"}}>{initError}</div>
       <button onClick={()=>window.location.reload()} style={{padding:"10px 20px",background:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>Reload</button>
     </div>;
@@ -861,7 +886,7 @@ select option{background:#fff}`;
   // branding until the access code is verified server-side.
   if(prospectShareSlug){
     if(!prospectAuth[prospectShareSlug]){
-      return <div style={{fontFamily:"'Plus Jakarta Sans','Segoe UI',sans-serif"}}><style>{CSS}</style>
+      return <div style={{fontFamily:"'Inter','Segoe UI',sans-serif"}}><style>{CSS}</style>
         <ProspectLogin shareSlug={prospectShareSlug} onSuccess={mappedDeal=>{
           setDeals([mappedDeal]);
           setActiveId(mappedDeal.id);
@@ -881,7 +906,7 @@ select option{background:#fff}`;
     // Signed in, org resolved, but zero deals yet -- the old render tree below assumes a
     // deal always exists, so this has to be its own early return rather than patched
     // field-by-field into every downstream reference.
-    return <div style={{fontFamily:"'Plus Jakarta Sans','Segoe UI',sans-serif",minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}}><style>{CSS}</style>
+    return <div style={{fontFamily:"'Inter','Segoe UI',sans-serif",minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}}><style>{CSS}</style>
       <div style={{fontSize:16,fontWeight:700,color:P.text}}>No deal rooms yet</div>
       <div style={{fontSize:13,color:P.textSec}}>Create your first one to get started.</div>
       <button onClick={()=>setShowCreator(true)} style={{padding:"10px 20px",background:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>+ New Deal Room</button>
@@ -895,63 +920,57 @@ select option{background:#fff}`;
   const pct=Math.round(done/(visItems.length||1)*100);
 
   if(!prospectShareSlug&&viewMode==="prospect"&&!prospectAuth[activeId]){
-    return <div style={{fontFamily:"'Plus Jakarta Sans','Segoe UI',sans-serif"}}><style>{CSS}</style>
+    return <div style={{fontFamily:"'Inter','Segoe UI',sans-serif"}}><style>{CSS}</style>
       <div style={{display:"flex",minHeight:"100vh"}}>
-        <div style={{width:252,background:P.surface,borderRight:`1px solid ${P.border}`,display:"flex",flexDirection:"column",flexShrink:0}}>
-          <div style={{padding:"18px 16px 14px",borderBottom:`1px solid ${P.border}`}}>
-            <div style={{display:"flex",alignItems:"center",gap:9}}>
-              <div style={{width:32,height:32,background:`linear-gradient(135deg,${P.accent},${P.accentMid})`,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center"}}><span style={{color:"#fff",fontSize:14,fontWeight:800}}>D</span></div>
-              <span style={{fontSize:14,fontWeight:800,color:P.text}}>DealRoom</span>
-            </div>
+        <div style={{width:264,background:P.ink,display:"flex",flexDirection:"column",flexShrink:0,padding:"24px 16px"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,padding:"4px 4px 22px"}}>
+            <div style={{width:36,height:36,borderRadius:9,background:"rgba(255,255,255,0.08)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><div style={{width:20,height:20}}>{LOGO_MARK}</div></div>
+            <div><div className="headline" style={{fontSize:18,color:"#fff",lineHeight:1}}>myBivy</div><div className="mono" style={{fontSize:9.5,letterSpacing:"0.08em",textTransform:"uppercase",color:"rgba(255,255,255,0.4)",marginTop:3}}>By SRENE</div></div>
           </div>
-          <div style={{padding:"10px 12px",borderBottom:`1px solid ${P.border}`,display:"flex",gap:4}}>
+          <div style={{display:"flex",background:"rgba(255,255,255,0.06)",borderRadius:9,padding:3,marginBottom:20}}>
             {[["rep","Sales Rep"],["prospect","Prospect"]].map(([v,l])=>(
-              <button key={v} onClick={()=>{setViewMode(v);setTab(v==="prospect"?"welcome":"map");}} style={{flex:1,padding:"6px 8px",borderRadius:6,border:`1px solid ${viewMode===v?P.accent:P.border}`,background:viewMode===v?P.accentLight:"transparent",color:viewMode===v?P.accent:P.textSec,fontSize:11,fontWeight:700,cursor:"pointer"}}>{l}</button>))}
+              <button key={v} onClick={()=>{setViewMode(v);setTab(v==="prospect"?"welcome":"map");}} style={{flex:1,padding:"8px 0",fontSize:12.5,fontWeight:600,color:viewMode===v?"#fff":"rgba(255,255,255,0.5)",background:viewMode===v?P.accent:"transparent",border:"none",borderRadius:7,cursor:"pointer"}}>{l}</button>))}
           </div>
-          <div style={{padding:"10px 8px",flex:1}}>
-            {deals.map(d=><div key={d.id} onClick={()=>setActiveId(d.id)} className="hd" style={{padding:"10px 8px",borderRadius:8,background:d.id===activeId?P.accentLight:"transparent",border:`1px solid ${d.id===activeId?"#BFDBFE":"transparent"}`,borderLeft:`3px solid ${d.id===activeId?P.accent:"transparent"}`,marginBottom:2}}>
-              <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:32,height:32,borderRadius:7,background:d.color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:800,color:"#fff"}}>{d.logo}</div><div><div style={{fontSize:12,fontWeight:700,color:d.id===activeId?P.accent:P.text}}>{d.company}</div><div style={{fontSize:10,color:P.textMute}}>{d.stage}</div></div></div>
-            </div>)}
-          </div>
+          <div className="mono" style={{fontSize:10.5,letterSpacing:"0.08em",textTransform:"uppercase",color:"rgba(255,255,255,0.35)",marginBottom:12,padding:"0 6px"}}>Active Deals</div>
+          {deals.map(d=><div key={d.id} onClick={()=>setActiveId(d.id)} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 8px",borderRadius:8,background:d.id===activeId?"rgba(255,255,255,0.07)":"transparent",marginBottom:2,cursor:"pointer"}}>
+            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13.5,fontWeight:600,color:"#fff",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{d.company}</div><div className="mono" style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}>{d.value}</div></div>
+          </div>)}
         </div>
         <ProspectLogin deal={deal} onSuccess={email=>setProspectAuth(p=>({...p,[activeId]:email}))}/>
       </div>
     </div>;
   }
 
-  return <div style={{fontFamily:"'Plus Jakarta Sans','Segoe UI',sans-serif",background:P.bg,minHeight:"100vh",display:"flex",color:P.text}}>
+  return <div style={{fontFamily:"'Inter','Segoe UI',sans-serif",background:P.bg,minHeight:"100vh",display:"flex",color:P.text}}>
     <style>{CSS}</style>
 
     {/* SIDEBAR -- hidden entirely for a real prospect on a share link: no picker into
         other org deals, no rep/prospect toggle they could flip to see edit controls. */}
-    {!prospectShareSlug&&<div style={{width:252,background:P.surface,borderRight:`1px solid ${P.border}`,display:"flex",flexDirection:"column",flexShrink:0}}>
-      <div style={{padding:"18px 16px 14px",borderBottom:`1px solid ${P.border}`}}>
-        <div style={{display:"flex",alignItems:"center",gap:9}}>
-          <div style={{width:32,height:32,background:`linear-gradient(135deg,${P.accent},${P.accentMid})`,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center"}}><span style={{color:"#fff",fontSize:14,fontWeight:800}}>D</span></div>
-          <div><div style={{fontSize:14,fontWeight:800,color:P.text,letterSpacing:"-0.4px"}}>DealRoom</div><div style={{fontSize:10,color:P.textMute,marginTop:1}}>Enterprise Sales Platform</div></div>
-        </div>
+    {!prospectShareSlug&&<div style={{width:264,background:P.ink,display:"flex",flexDirection:"column",flexShrink:0,padding:"24px 18px"}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,padding:"4px 4px 22px"}}>
+        <div style={{width:36,height:36,borderRadius:9,background:"rgba(255,255,255,0.08)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><div style={{width:20,height:20}}>{LOGO_MARK}</div></div>
+        <div><div className="headline" style={{fontSize:19,color:"#fff",lineHeight:1}}>myBivy</div><div className="mono" style={{fontSize:9.5,letterSpacing:"0.08em",textTransform:"uppercase",color:"rgba(255,255,255,0.4)",marginTop:3}}>By SRENE</div></div>
       </div>
-      <div style={{padding:"10px 12px",borderBottom:`1px solid ${P.border}`,display:"flex",gap:4}}>
+      <div style={{display:"flex",background:"rgba(255,255,255,0.06)",borderRadius:9,padding:3,marginBottom:20}}>
         {[["rep","Sales Rep"],["prospect","Prospect"]].map(([v,l])=>(
-          <button key={v} onClick={()=>{setViewMode(v);setTab(v==="prospect"?"welcome":"map");}} style={{flex:1,padding:"6px 8px",borderRadius:6,border:`1px solid ${viewMode===v?P.accent:P.border}`,background:viewMode===v?P.accentLight:"transparent",color:viewMode===v?P.accent:P.textSec,fontSize:11,fontWeight:700,cursor:"pointer"}}>{l}</button>))}
+          <button key={v} onClick={()=>{setViewMode(v);setTab(v==="prospect"?"welcome":"map");}} style={{flex:1,padding:"8px 0",fontSize:12.5,fontWeight:600,color:viewMode===v?"#fff":"rgba(255,255,255,0.5)",background:viewMode===v?P.accent:"transparent",border:"none",borderRadius:7,cursor:"pointer"}}>{l}</button>))}
       </div>
-      <div style={{padding:"10px 8px 6px",flex:1,overflowY:"auto"}}>
-        <div style={{fontSize:10,fontWeight:700,color:P.textMute,letterSpacing:"0.08em",textTransform:"uppercase",padding:"0 8px",marginBottom:6}}>Active Deals</div>
+      <div style={{flex:1,overflowY:"auto"}}>
+        <div className="mono" style={{fontSize:10.5,letterSpacing:"0.08em",textTransform:"uppercase",color:"rgba(255,255,255,0.35)",marginBottom:12,padding:"0 6px"}}>Active Deals</div>
         {deals.map(d=>{const dp=Math.round(d.mapItems.filter(t=>t.status==="complete").length/d.mapItems.length*100);const isA=d.id===activeId;return(
-          <div key={d.id} className="hd" onClick={()=>{setActiveId(d.id);setAiOpen(false);setAiText("");setTab(viewMode==="prospect"?"welcome":"map");}} style={{padding:"10px 8px",borderRadius:8,background:isA?P.accentLight:"transparent",border:`1px solid ${isA?"#BFDBFE":"transparent"}`,borderLeft:`3px solid ${isA?P.accent:"transparent"}`,marginBottom:2,transition:"all .12s"}}>
+          <div key={d.id} className="hd" onClick={()=>{setActiveId(d.id);setAiOpen(false);setAiText("");setTab(viewMode==="prospect"?"welcome":"map");}} style={{padding:"10px 8px",borderRadius:8,background:isA?"rgba(255,255,255,0.07)":"transparent",marginBottom:2,transition:"all .12s"}}>
             <div style={{display:"flex",alignItems:"center",gap:8}}>
-              <div style={{width:32,height:32,borderRadius:7,background:d.color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:800,color:"#fff",flexShrink:0}}>{d.logo}</div>
-              <div style={{minWidth:0}}><div style={{fontSize:12,fontWeight:700,color:isA?P.accent:P.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{d.company}</div><div style={{fontSize:10,color:P.textMute,marginTop:1}}>{d.stage} · {d.value}</div></div>
+              <div style={{minWidth:0,flex:1}}><div style={{fontSize:13.5,fontWeight:600,color:"#fff",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{d.company}</div><div className="mono" style={{fontSize:11,color:"rgba(255,255,255,0.4)",marginTop:1}}>{d.value}</div></div>
             </div>
-            <div style={{marginTop:7,marginLeft:40}}><div style={{height:3,background:P.border,borderRadius:99,overflow:"hidden"}}><div style={{width:`${dp}%`,height:"100%",background:isA?P.accent:P.textMute,borderRadius:99}}/></div></div>
+            <div style={{marginTop:7}}><div style={{height:3,background:"rgba(255,255,255,0.12)",borderRadius:99,overflow:"hidden"}}><div style={{width:`${dp}%`,height:"100%",background:isA?P.accent:"rgba(255,255,255,0.4)",borderRadius:99}}/></div></div>
           </div>);})}
-        <button onClick={()=>setShowCreator(true)} style={{width:"100%",marginTop:8,padding:8,border:`1.5px dashed ${P.border}`,borderRadius:8,background:"none",color:P.textMute,fontSize:11,fontWeight:600,cursor:"pointer"}} onMouseOver={e=>{e.currentTarget.style.borderColor=P.accent;e.currentTarget.style.color=P.accent;}} onMouseOut={e=>{e.currentTarget.style.borderColor=P.border;e.currentTarget.style.color=P.textMute;}}>+ New Deal Room</button>
+        <button onClick={()=>setShowCreator(true)} style={{width:"100%",marginTop:8,display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:11,border:"1.5px dashed rgba(255,255,255,0.25)",borderRadius:9,background:"transparent",color:"rgba(255,255,255,0.85)",fontSize:13.5,fontWeight:600,cursor:"pointer"}}>+ New Deal Room</button>
       </div>
-      <div style={{padding:"12px 16px",borderTop:`1px solid ${P.border}`,display:"flex",alignItems:"center",gap:10}}>
-        <img src={AE.photo} alt={AE.name} style={{width:32,height:32,borderRadius:"50%",objectFit:"cover",border:`2px solid ${P.border}`,flexShrink:0}} onError={e=>{e.target.style.display="none";}}/>
-        <div style={{flex:1,minWidth:0}}><div style={{fontSize:12,fontWeight:700,color:P.text}}>{AE.name}</div><div style={{fontSize:11,color:P.textMute,marginTop:1}}>{AE.title}</div></div>
-        {(myRole==="owner"||myRole==="admin")&&<button onClick={()=>setShowSettings(true)} title="Team & Settings" style={{background:"none",border:"none",color:P.textMute,fontSize:14,cursor:"pointer",flexShrink:0}}>⚙</button>}
-        <button onClick={()=>sb.auth.signOut()} title="Sign out" style={{background:"none",border:"none",color:P.textMute,fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0}}>Sign out</button>
+      <div style={{paddingTop:12,marginTop:12,borderTop:"1px solid rgba(255,255,255,0.08)",display:"flex",alignItems:"center",gap:10}}>
+        <img src={AE.photo} alt={AE.name} style={{width:34,height:34,borderRadius:"50%",objectFit:"cover",flexShrink:0}} onError={e=>{e.target.outerHTML=`<div style="width:34px;height:34px;border-radius:50%;background:${P.accent};display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;flex-shrink:0">${AE.initials}</div>`;}}/>
+        <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#fff"}}>{AE.name}</div><div style={{fontSize:11,color:"rgba(255,255,255,0.4)",marginTop:1}}>{AE.title}</div></div>
+        {(myRole==="owner"||myRole==="admin")&&<button onClick={()=>setShowSettings(true)} title="Team & Settings" style={{background:"none",border:"none",color:"rgba(255,255,255,0.5)",fontSize:14,cursor:"pointer",flexShrink:0}}>⚙</button>}
+        <button onClick={()=>sb.auth.signOut()} title="Sign out" style={{background:"none",border:"none",color:"rgba(255,255,255,0.5)",fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0}}>Sign out</button>
       </div>
     </div>}
     {showSettings&&<SettingsModal orgId={orgId} myUserId={session?.user?.id} myRole={myRole} onClose={()=>setShowSettings(false)}/>}
@@ -961,10 +980,10 @@ select option{background:#fff}`;
       {/* Header */}
       <div style={{background:P.surface,borderBottom:`1px solid ${P.border}`,padding:"12px 24px",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
         <div style={{display:"flex",alignItems:"center",gap:14}}>
-          <div style={{width:42,height:42,borderRadius:9,background:deal.color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:800,color:"#fff"}}>{deal.logo}</div>
+          <div style={{width:42,height:42,borderRadius:9,background:P.accentLight,display:"flex",alignItems:"center",justifyContent:"center"}}><span className="headline" style={{fontSize:15,color:P.accentMid}}>{deal.logo}</span></div>
           <div>
             <div style={{display:"flex",alignItems:"center",gap:8}}>
-              <span style={{fontSize:17,fontWeight:800,color:P.text,letterSpacing:"-0.5px"}}>{deal.company}</span>
+              <span className="headline" style={{fontSize:18,color:P.text}}>{deal.company}</span>
               <span style={{fontSize:12,color:P.textMute}}>·</span>
               <span style={{fontSize:13,color:P.textSec,fontWeight:500}}>{deal.title}</span>
               {viewMode==="prospect"&&<span style={{padding:"2px 8px",background:P.greenBg,border:`1px solid ${P.greenBorder}`,borderRadius:20,fontSize:10,fontWeight:700,color:P.green}}>PROSPECT VIEW</span>}
@@ -972,9 +991,15 @@ select option{background:#fff}`;
             <div style={{display:"flex",gap:14,marginTop:3}}>{[deal.industry,deal.value,deal.closeDate?`Close ${deal.closeDate}`:null,deal.contact].filter(Boolean).map((v,i)=><span key={i} style={{fontSize:11,color:P.textMute}}>{v}</span>)}</div>
           </div>
         </div>
-        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+        <div style={{display:"flex",gap:14,alignItems:"center"}}>
+          {deal.contributors.length>0&&<div style={{display:"flex"}}>
+            {deal.contributors.slice(0,3).map((c,i)=>(
+              <div key={c.id} title={c.name} style={{width:30,height:30,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11.5,fontWeight:700,color:"#fff",border:`2px solid ${P.surface}`,marginLeft:i===0?0:-9,background:[P.accent,P.green,P.ink,"#8A9099"][i%4]}} className="headline">{c.initials}</div>
+            ))}
+            {deal.contributors.length>3&&<div style={{width:30,height:30,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#fff",border:`2px solid ${P.surface}`,marginLeft:-9,background:"#8A9099"}}>+{deal.contributors.length-3}</div>}
+          </div>}
           <div style={{display:"flex",alignItems:"center",gap:6,padding:"5px 12px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:20}}>
-            <span style={{fontSize:10,color:P.textMute,fontWeight:600}}>ENGAGEMENT</span>
+            <span className="mono" style={{fontSize:10,color:P.textMute,fontWeight:600}}>ENGAGEMENT</span>
             <div style={{width:50,height:4,background:P.border,borderRadius:99,overflow:"hidden"}}><div style={{width:`${deal.engagement}%`,height:"100%",background:deal.engagement>60?P.green:P.amber,borderRadius:99}}/></div>
             <span style={{fontSize:11,fontWeight:800,color:deal.engagement>60?P.green:P.amber}}>{deal.engagement}%</span>
           </div>
@@ -997,8 +1022,8 @@ select option{background:#fff}`;
           {tab==="welcome"&&viewMode==="prospect"&&<div style={{maxWidth:800}}>
             <div style={{background:`linear-gradient(135deg,${P.accent} 0%,${P.accentMid} 100%)`,borderRadius:16,padding:"32px 36px",marginBottom:24,position:"relative",overflow:"hidden"}}>
               <div style={{position:"absolute",right:-20,top:-20,width:180,height:180,borderRadius:"50%",background:"rgba(255,255,255,0.06)"}}/>
-              <div style={{width:52,height:52,borderRadius:12,background:deal.color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,fontWeight:800,color:"#fff",marginBottom:16}}>{deal.logo}</div>
-              <div style={{fontSize:22,fontWeight:800,color:"#fff",letterSpacing:"-0.5px",marginBottom:8}}>Welcome, {deal.company}</div>
+              <div style={{width:52,height:52,borderRadius:12,background:"rgba(255,255,255,0.15)",display:"flex",alignItems:"center",justifyContent:"center",marginBottom:16}}><span className="headline" style={{fontSize:18,color:"#fff"}}>{deal.logo}</span></div>
+              <div className="headline" style={{fontSize:24,color:"#fff",marginBottom:8}}>Welcome, {deal.company}</div>
               <div style={{fontSize:14,color:"rgba(255,255,255,0.85)",lineHeight:1.7,maxWidth:560}}>{deal.welcomeMsg}</div>
             </div>
             {/* AE Profile Card */}
@@ -1035,7 +1060,7 @@ select option{background:#fff}`;
           {/* EXEC SUMMARY */}
           {tab==="summary"&&<div style={{maxWidth:820}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
-              <div style={{fontSize:20,fontWeight:800,color:P.text,letterSpacing:"-0.5px"}}>Executive Summary</div>
+              <div className="headline" style={{fontSize:22,color:P.text}}>Executive Summary</div>
               {viewMode==="rep"&&<button onClick={()=>runAI("bizcase")} style={{padding:"8px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>✦ AI Refresh</button>}
             </div>
             <div style={{display:"flex",alignItems:"center",gap:6,padding:"8px 12px",background:P.surface,border:`1px solid ${P.border}`,borderRadius:"8px 8px 0 0",borderBottom:"none"}}>
@@ -1060,23 +1085,19 @@ select option{background:#fff}`;
             <ProcessTimeline deal={deal}/>
             {phases.map(phase=>{
               const items=visItems.filter(t=>t.phase===phase);
-              const pc=PHASE_CFG[phase]||PHASE_CFG["Value Alignment"];
-              return <div key={phase} style={{marginBottom:24}}>
-                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
-                  <div style={{display:"flex",alignItems:"center",gap:7,padding:"4px 14px",background:pc.bg,border:`1px solid ${pc.border}`,borderRadius:20}}>
-                    <div style={{width:7,height:7,borderRadius:"50%",background:pc.dot}}/><span style={{fontSize:11,fontWeight:800,color:pc.color,letterSpacing:"0.05em",textTransform:"uppercase"}}>{phase}</span>
-                  </div>
-                  <div style={{flex:1,height:1,background:pc.border}}/>
-                  <span style={{fontSize:11,fontWeight:700,color:pc.color}}>{items.filter(t=>t.status==="complete").length}/{items.length}</span>
+              return <div key={phase} style={{marginBottom:20}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 4px"}}>
+                  <span className="mono" style={{fontSize:11.5,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",color:P.textMute}}>{phase}</span>
+                  <span style={{fontSize:12.5,color:P.textMute}}>{items.filter(t=>t.status==="complete").length} of {items.length} complete</span>
                 </div>
-                <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:10,overflow:"hidden"}}>
+                <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:12,overflow:"hidden",boxShadow:"0 1px 2px rgba(27,31,35,0.05), 0 12px 32px -12px rgba(27,31,35,0.16)"}}>
                   <div style={{display:"grid",gridTemplateColumns:`1fr 100px 150px 100px 110px${viewMode==="rep"?" 26px":""}`,padding:"7px 16px",background:P.bg,borderBottom:`1px solid ${P.border}`}}>
                     {["Task","Seller","Buyer Owner","Due Date","Status"].concat(viewMode==="rep"?[""]:[]).map(h=><div key={h} style={{fontSize:10,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.07em"}}>{h}</div>)}
                   </div>
                   {items.map((task,i)=>{const sc=STATUS_CFG[task.status];return(
                     <div key={task.id} className="hr" style={{display:"grid",gridTemplateColumns:`1fr 100px 150px 100px 110px${viewMode==="rep"?" 26px":""}`,padding:"11px 16px",borderBottom:i<items.length-1?`1px solid ${P.bg}`:"none",alignItems:"center"}}>
                       <div style={{display:"flex",alignItems:"flex-start",gap:10}}>
-                        <div style={{width:18,height:18,borderRadius:"50%",border:`2px solid ${task.status==="complete"?P.green:P.border}`,background:task.status==="complete"?P.green:P.surface,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",marginTop:1}}>{task.status==="complete"&&<span style={{color:"#fff",fontSize:9,fontWeight:800}}>✓</span>}</div>
+                        <div style={{width:20,height:20,borderRadius:"50%",border:task.status==="complete"?"none":`1.5px solid ${P.border}`,background:task.status==="complete"?P.ink:P.surface,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",marginTop:1}}>{task.status==="complete"&&<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1.5 5l2.3 2.3L8.5 2.5" stroke="#fff" strokeWidth="1.6" strokeLinecap="round"/></svg>}</div>
                         <div>
                           <div style={{fontSize:13,color:task.status==="complete"?P.textMute:P.text,textDecoration:task.status==="complete"?"line-through":"none",fontWeight:500}}>{task.task}</div>
                           {task.notes&&<div style={{fontSize:11,color:P.textMute,marginTop:2,fontStyle:"italic"}}>{task.notes}</div>}
@@ -1114,14 +1135,14 @@ select option{background:#fff}`;
           {/* DISCOVERY */}
           {tab==="discovery"&&<div style={{maxWidth:860}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
-              <div><div style={{fontSize:20,fontWeight:800,color:P.text,letterSpacing:"-0.5px"}}>Business Outcomes & Value Identification</div><div style={{fontSize:13,color:P.textSec,marginTop:3}}>{deal.company} · {deal.industry}</div></div>
+              <div><div className="headline" style={{fontSize:22,color:P.text}}>Business Outcomes & Value Identification</div><div style={{fontSize:13,color:P.textSec,marginTop:3}}>{deal.company} · {deal.industry}</div></div>
               {viewMode==="rep"&&<button onClick={()=>runAI("bizcase")} style={{padding:"8px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>✦ Build Business Case</button>}
             </div>
-            {deal.discovery.summary&&<div style={{background:`linear-gradient(135deg,${P.accentLight},#EEF6FF)`,border:`1px solid #BFDBFE`,borderRadius:12,padding:"18px 22px",marginBottom:16,borderLeft:`4px solid ${P.accent}`}}>
+            {deal.discovery.summary&&<div style={{background:`linear-gradient(135deg,${P.accentLight},#EEF6FF)`,border:`1px solid #F0C9B7`,borderRadius:12,padding:"18px 22px",marginBottom:16,borderLeft:`4px solid ${P.accent}`}}>
               <div style={{fontSize:11,fontWeight:800,color:P.accent,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Discovery Summary</div>
               <p style={{fontSize:13,color:P.textSec,lineHeight:1.75}}>{deal.discovery.summary}</p>
             </div>}
-            {[{key:"st",title:"Corporate Strategy & Growth Initiatives",icon:"◈",items:deal.discovery.corporateStrategy,color:P.accent,bg:P.accentLight,border:"#BFDBFE"},
+            {[{key:"st",title:"Corporate Strategy & Growth Initiatives",icon:"◈",items:deal.discovery.corporateStrategy,color:P.accent,bg:P.accentLight,border:"#F0C9B7"},
               {key:"ou",title:"Top Business Outcomes",icon:"◉",items:deal.discovery.topOutcomes,color:P.green,bg:P.greenBg,border:P.greenBorder},
               {key:"ch",title:"Current Challenges",icon:"◌",items:deal.discovery.challenges,color:P.red,bg:P.redBg,border:P.redBorder},
               {key:"jb",title:"Jobs to Be Done",icon:"◎",items:deal.discovery.jobsToBeDone,color:P.purple,bg:P.purpleBg,border:P.purpleBorder}
@@ -1137,7 +1158,7 @@ select option{background:#fff}`;
                   </div>)}
                 </div>
               </div>))}
-            <div style={{background:`linear-gradient(135deg,${P.accentLight},#EEF6FF)`,border:`1px solid #BFDBFE`,borderRadius:10,padding:"18px 20px",marginBottom:12}}>
+            <div style={{background:`linear-gradient(135deg,${P.accentLight},#EEF6FF)`,border:`1px solid #F0C9B7`,borderRadius:10,padding:"18px 20px",marginBottom:12}}>
               <div style={{fontSize:11,fontWeight:800,color:P.accent,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Primary Use Case</div>
               <p style={{fontSize:13,color:P.textSec,lineHeight:1.75}}>{deal.discovery.primaryUseCase}</p>
             </div>
@@ -1201,7 +1222,7 @@ select option{background:#fff}`;
             </div>:<div style={{display:"grid",gap:10}}>
               {deal.stakeholders.map(s=>{const dc=DESIG_CFG[s.designation]||DESIG_CFG.influencer;const ec=s.engagement>60?P.green:s.engagement>30?P.amber:P.red;return(
                 <div key={s.id} style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:12,padding:"18px 20px",display:"flex",alignItems:"center",gap:16}}>
-                  <div style={{width:48,height:48,borderRadius:"50%",background:deal.color+"20",border:`2px solid ${deal.color}50`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:800,color:deal.color,flexShrink:0}}>{s.initials}</div>
+                  <div className="headline" style={{width:48,height:48,borderRadius:"50%",background:P.accentLight,border:`2px solid ${P.ropeBorder}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,color:P.accentMid,flexShrink:0}}>{s.initials}</div>
                   <div style={{flex:1}}>
                     <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}><span style={{fontSize:15,fontWeight:700,color:P.text}}>{s.name}</span><Badge label={dc.label} color={dc.color} bg={dc.bg} border={dc.border}/>{s.approvalRequired&&<Badge label="Approval Required" color={P.red} bg={P.redBg} border={P.redBorder}/>}</div>
                     <div style={{fontSize:12,color:P.textSec,marginBottom:3}}>{s.role} · <span style={{color:P.textMute}}>{s.bu}</span></div>
@@ -1212,7 +1233,7 @@ select option{background:#fff}`;
                     </div>
                   </div>
                   <div style={{display:"flex",gap:8,flexDirection:"column",alignItems:"flex-end"}}>
-                    <a href={s.linkedin} target="_blank" rel="noopener noreferrer" style={{display:"flex",alignItems:"center",gap:5,padding:"5px 10px",background:"#EBF5FF",border:"1px solid #BFDBFE",borderRadius:6,color:"#0A66C2",fontSize:11,fontWeight:700,textDecoration:"none"}}>{LI_SVG}LinkedIn</a>
+                    <a href={s.linkedin} target="_blank" rel="noopener noreferrer" style={{display:"flex",alignItems:"center",gap:5,padding:"5px 10px",background:"#EBF5FF",border:"1px solid #F0C9B7",borderRadius:6,color:"#0A66C2",fontSize:11,fontWeight:700,textDecoration:"none"}}>{LI_SVG}LinkedIn</a>
                     {viewMode==="rep"&&<button onClick={()=>{setChatInput(`How do I engage ${s.name} (${s.role}, ${s.designation})?`);setAiOpen(true);}} style={{padding:"5px 10px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:11,fontWeight:600,cursor:"pointer"}}>Coach me</button>}
                   </div>
                 </div>);})}
@@ -1221,7 +1242,7 @@ select option{background:#fff}`;
 
           {/* ANALYTICS */}
           {tab==="analytics"&&viewMode==="rep"&&<div style={{maxWidth:900}}>
-            <div style={{fontSize:18,fontWeight:800,color:P.text,letterSpacing:"-0.3px",marginBottom:20}}>Analytics</div>
+            <div className="headline" style={{fontSize:20,color:P.text,marginBottom:20}}>Analytics</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:14,marginBottom:24}}>
               {[{label:"Room Visits",val:deal.activityLog.reduce((a,d)=>a+d.entries.length,0),sub:"Total stakeholder visits",color:P.accent},
                 {label:"Interactions",val:deal.activityLog.reduce((a,d)=>a+d.entries.reduce((b,e)=>b+e.actions.length,0),0),sub:"Documents viewed / actions",color:P.purple},
@@ -1275,7 +1296,7 @@ select option{background:#fff}`;
             <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:10,overflow:"hidden"}}>
               {deal.stakeholders.map((s,i)=>{const ec=s.engagement>60?P.green:s.engagement>30?P.amber:P.red;return(
                 <div key={s.id} style={{display:"flex",alignItems:"center",gap:14,padding:"12px 18px",borderBottom:i<deal.stakeholders.length-1?`1px solid ${P.bg}`:"none"}}>
-                  <div style={{width:32,height:32,borderRadius:"50%",background:deal.color+"20",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,color:deal.color}}>{s.initials}</div>
+                  <div className="headline" style={{width:32,height:32,borderRadius:"50%",background:P.accentLight,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,color:P.accentMid}}>{s.initials}</div>
                   <div style={{width:150}}><div style={{fontSize:13,fontWeight:600,color:P.text}}>{s.name}</div><div style={{fontSize:11,color:P.textMute}}>{s.role}</div></div>
                   <div style={{flex:1,height:8,background:P.bg,borderRadius:99,overflow:"hidden"}}><div style={{width:`${s.engagement}%`,height:"100%",background:ec,borderRadius:99}}/></div>
                   <span style={{fontSize:13,fontWeight:800,color:ec,width:36,textAlign:"right"}}>{s.engagement}%</span>
@@ -1289,7 +1310,7 @@ select option{background:#fff}`;
         {/* AI PANEL */}
         {aiOpen&&viewMode==="rep"&&<div style={{width:390,background:P.surface,borderLeft:`1px solid ${P.border}`,display:"flex",flexDirection:"column",flexShrink:0}}>
           <div style={{padding:"13px 16px",borderBottom:`1px solid ${P.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",background:P.bg}}>
-            <div style={{display:"flex",alignItems:"center",gap:7}}><div style={{width:8,height:8,borderRadius:"50%",background:aiLoading?P.amber:P.accent}}/><span style={{fontSize:13,fontWeight:800,color:P.text}}>AI Deal Coach</span></div>
+            <div style={{display:"flex",alignItems:"center",gap:7}}><div style={{width:8,height:8,borderRadius:"50%",background:aiLoading?P.amber:P.accent}}/><span className="headline" style={{fontSize:14,color:P.text}}>AI Deal Coach</span></div>
             <button onClick={()=>setAiOpen(false)} style={{background:"none",border:"none",color:P.textMute,cursor:"pointer",fontSize:20,lineHeight:1}}>×</button>
           </div>
           <div style={{padding:"10px 12px",borderBottom:`1px solid ${P.border}`,display:"flex",flexWrap:"wrap",gap:5}}>
@@ -1325,13 +1346,13 @@ class ErrorBoundary extends React.Component {
   render() {
     if (this.state.error) {
       return React.createElement("div", {
-        style: { minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, padding: 24, textAlign: "center", fontFamily: "'Plus Jakarta Sans','Segoe UI',sans-serif" }
+        style: { minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, padding: 24, textAlign: "center", fontFamily: "'Inter','Segoe UI',sans-serif" }
       },
-        React.createElement("div", { style: { fontSize: 16, fontWeight: 700, color: "#111827" } }, "Something went wrong"),
-        React.createElement("div", { style: { fontSize: 13, color: "#4B5563", maxWidth: 480, fontFamily: "monospace", whiteSpace: "pre-wrap" } }, String(this.state.error && this.state.error.message || this.state.error)),
+        React.createElement("div", { style: { fontSize: 16, fontWeight: 700, color: "#252A2E" } }, "Something went wrong"),
+        React.createElement("div", { style: { fontSize: 13, color: "#6B7178", maxWidth: 480, fontFamily: "monospace", whiteSpace: "pre-wrap" } }, String(this.state.error && this.state.error.message || this.state.error)),
         React.createElement("button", {
           onClick: () => window.location.reload(),
-          style: { padding: "10px 20px", background: "#1A4FBA", border: "none", borderRadius: 8, color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer" }
+          style: { padding: "10px 20px", background: "#D65F3C", border: "none", borderRadius: 8, color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer" }
         }, "Reload")
       );
     }
