@@ -68,6 +68,7 @@ function mapDealFromDb(row) {
       lastSeen: relTime(s.last_seen_at),
       initials: initialsOf(s.name),
       bu: s.business_unit,
+      email: s.email,
       approvalRequired: s.approval_required,
       docsViewed: [],
       linkedin: s.linkedin_url,
@@ -203,6 +204,25 @@ const ALLOWED_DOC_MIME = {
 const Badge = ({label,color,bg,border,small}) => (
   <span style={{padding:small?"2px 7px":"3px 10px",borderRadius:4,background:bg,border:`1px solid ${border}`,color,fontSize:small?10:11,fontWeight:700,whiteSpace:"nowrap"}}>{label}</span>
 );
+// Add/edit/remove for a plain list of free-text items -- shared by every editable list
+// section across Executive Summary and Discovery, instead of duplicating the same
+// add/remove logic at each of the 7 call sites.
+const EditableList = ({items,onChange}) => {
+  const [draft,setDraft]=useState("");
+  const add=()=>{if(!draft.trim())return;onChange([...items,draft.trim()]);setDraft("");};
+  return (<div>
+    {items.map((item,i)=>(
+      <div key={i} style={{display:"flex",gap:8,alignItems:"center",marginBottom:6}}>
+        <input value={item} onChange={e=>onChange(items.map((it,j)=>j===i?e.target.value:it))} style={{flex:1,border:`1px solid ${P.border}`,borderRadius:6,padding:"7px 10px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"}}/>
+        <button onClick={()=>onChange(items.filter((_,j)=>j!==i))} style={{background:"none",border:"none",color:P.textMute,fontSize:16,cursor:"pointer",flexShrink:0}}>×</button>
+      </div>
+    ))}
+    <div style={{display:"flex",gap:8}}>
+      <input value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&add()} placeholder="Add item..." style={{flex:1,border:`1px solid ${P.border}`,borderRadius:6,padding:"7px 10px",fontSize:13,color:P.text,background:P.surface,fontFamily:"inherit",outline:"none"}}/>
+      <button onClick={add} style={{padding:"7px 14px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer",flexShrink:0}}>+ Add</button>
+    </div>
+  </div>);
+};
 const renderMD = t => t
   .replace(/^## (.+)/gm,`<div style="font-size:12px;font-weight:800;color:${P.accent};margin:14px 0 5px;text-transform:uppercase;letter-spacing:.07em;border-bottom:2px solid ${P.accentLight};padding-bottom:3px">$1</div>`)
   .replace(/\*\*(.+?)\*\*/g,`<strong style="color:${P.text}">$1</strong>`)
@@ -647,6 +667,45 @@ const ShareModal = ({deal,onClose}) => {
 };
 const lbl0={fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6};
 
+// Add (editing=null) and edit (editing=existing stakeholder) share this one modal, same
+// pattern as DealCreator/SettingsModal/ShareModal. reportsTo excludes the stakeholder
+// itself from the options list -- a stakeholder can't report to themselves.
+const StakeholderModal = ({editing,allStakeholders,onSave,onClose}) => {
+  const blank={name:"",role:"",designation:"influencer",bu:"",email:"",linkedin:"",reportsTo:"",approvalRequired:false};
+  const [draft,setDraft]=useState(editing?{name:editing.name,role:editing.role,designation:editing.designation,bu:editing.bu||"",email:editing.email||"",linkedin:editing.linkedin||"",reportsTo:editing.reportsTo||"",approvalRequired:!!editing.approvalRequired}:blank);
+  const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
+  const save=()=>{if(!draft.name.trim())return;onSave({...draft,reportsTo:draft.reportsTo||null});};
+  return (<div style={{position:"fixed",inset:0,background:"rgba(27,31,35,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
+    <div style={{background:P.surface,borderRadius:16,width:480,maxHeight:"85vh",overflowY:"auto",padding:24,boxShadow:"0 24px 64px rgba(0,0,0,0.16)"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:18}}>
+        <span className="headline" style={{fontSize:18,color:P.text}}>{editing?"Edit Stakeholder":"Add Stakeholder"}</span>
+        <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,color:P.textMute,cursor:"pointer"}}>×</button>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+        <div><label style={lbl0}>Name *</label><input value={draft.name} onChange={e=>setDraft(d=>({...d,name:e.target.value}))} style={inp}/></div>
+        <div><label style={lbl0}>Role / Title</label><input value={draft.role} onChange={e=>setDraft(d=>({...d,role:e.target.value}))} style={inp}/></div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+        <div><label style={lbl0}>Designation</label><select value={draft.designation} onChange={e=>setDraft(d=>({...d,designation:e.target.value}))} style={inp}>{Object.keys(DESIG_CFG).map(k=><option key={k} value={k}>{DESIG_CFG[k].label}</option>)}</select></div>
+        <div><label style={lbl0}>Business Unit</label><input value={draft.bu} onChange={e=>setDraft(d=>({...d,bu:e.target.value}))} style={inp}/></div>
+      </div>
+      <div style={{marginBottom:12}}><label style={lbl0}>Email</label><input type="email" value={draft.email} onChange={e=>setDraft(d=>({...d,email:e.target.value}))} placeholder="them@company.com" style={inp}/></div>
+      <div style={{marginBottom:12}}><label style={lbl0}>LinkedIn URL</label><input value={draft.linkedin} onChange={e=>setDraft(d=>({...d,linkedin:e.target.value}))} style={inp}/></div>
+      <div style={{marginBottom:16}}><label style={lbl0}>Reports To</label>
+        <select value={draft.reportsTo} onChange={e=>setDraft(d=>({...d,reportsTo:e.target.value}))} style={inp}>
+          <option value="">— None —</option>
+          {allStakeholders.filter(s=>!editing||s.id!==editing.id).map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+      </div>
+      <div style={{marginBottom:20}}><label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:P.textSec,cursor:"pointer"}}><input type="checkbox" checked={draft.approvalRequired} onChange={e=>setDraft(d=>({...d,approvalRequired:e.target.checked}))}/>Approval Required</label></div>
+      <div style={{display:"flex",gap:10}}>
+        <button onClick={save} style={{flex:1,padding:"11px 20px",background:P.accent,border:"none",borderRadius:7,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>{editing?"Save Changes":"Add Stakeholder"}</button>
+        <button onClick={onClose} style={{padding:"11px 18px",background:"none",border:`1px solid ${P.border}`,borderRadius:7,color:P.textSec,fontSize:13,cursor:"pointer"}}>Cancel</button>
+      </div>
+    </div>
+  </div>);
+};
+
 function DealRoom({prospectShareSlug}) {
   const [session,setSession]=useState(undefined); // undefined=checking, null=signed out, object=signed in
   const [needsOrgSetup,setNeedsOrgSetup]=useState(false);
@@ -672,6 +731,12 @@ function DealRoom({prospectShareSlug}) {
   const [showCreator,setShowCreator]=useState(false);
   const [showShare,setShowShare]=useState(false);
   const [showAddTask,setShowAddTask]=useState(false);
+  const [editingSummary,setEditingSummary]=useState(false);
+  const [summaryDraft,setSummaryDraft]=useState(null);
+  const [editingDiscovery,setEditingDiscovery]=useState(false);
+  const [discoveryDraft,setDiscoveryDraft]=useState(null);
+  const [showStakeholderModal,setShowStakeholderModal]=useState(false);
+  const [editingStakeholder,setEditingStakeholder]=useState(null);
   const [newTask,setNewTask]=useState({phase:"Value Alignment",task:"",owner:"Mark H.",buyerOwner:"",dueDate:"",status:"pending",notes:"",approvalRequired:false});
   const [toast,setToast]=useState(null);
   const [orgView,setOrgView]=useState(false);
@@ -913,6 +978,63 @@ function DealRoom({prospectShareSlug}) {
     setNewTask({phase:"Value Alignment",task:"",owner:"Mark H.",buyerOwner:"",dueDate:"",status:"pending",notes:"",approvalRequired:false});
     setShowAddTask(false);
     flash("Task added");
+  };
+
+  // Executive Summary / Discovery are just JSONB columns on deals -- editing them is a
+  // plain deals update, already permitted by the existing can_manage_deal-keyed
+  // deals_update RLS policy (0003), same boundary every other mutation here relies on.
+  const updateExecSummary=async(newExecSummary)=>{
+    const {error}=await sb.from("deals").update({exec_summary:newExecSummary}).eq("id",deal.id);
+    if(error){flash("Couldn't save changes");return;}
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,execSummary:newExecSummary}));
+    flash("Executive Summary updated");
+  };
+  const updateDiscovery=async(newDiscovery)=>{
+    const {error}=await sb.from("deals").update({discovery:newDiscovery}).eq("id",deal.id);
+    if(error){flash("Couldn't save changes");return;}
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,discovery:newDiscovery}));
+    flash("Discovery updated");
+  };
+
+  const addStakeholder=async(draft)=>{
+    const {data,error}=await sb.from("stakeholders").insert({
+      deal_id:deal.id,created_by:session.user.id,name:draft.name,role_title:draft.role,
+      designation:draft.designation,engagement_score:50,business_unit:draft.bu||null,
+      email:draft.email||null,linkedin_url:draft.linkedin||null,reports_to:draft.reportsTo,
+      approval_required:!!draft.approvalRequired,
+    }).select().single();
+    if(error||!data){flash("Couldn't add stakeholder");return;}
+    const mapped={id:data.id,name:data.name,role:data.role_title,designation:data.designation,engagement:data.engagement_score,lastSeen:"Just added",initials:initialsOf(data.name),bu:data.business_unit,email:data.email,approvalRequired:data.approval_required,docsViewed:[],linkedin:data.linkedin_url,reportsTo:data.reports_to};
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,stakeholders:[...d.stakeholders,mapped]}));
+    setShowStakeholderModal(false);
+    flash("Stakeholder added");
+  };
+
+  const updateStakeholder=async(id,draft)=>{
+    const {error}=await sb.from("stakeholders").update({
+      name:draft.name,role_title:draft.role,designation:draft.designation,business_unit:draft.bu||null,
+      email:draft.email||null,linkedin_url:draft.linkedin||null,reports_to:draft.reportsTo,
+      approval_required:!!draft.approvalRequired,
+    }).eq("id",id);
+    if(error){flash("Couldn't update stakeholder");return;}
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,stakeholders:d.stakeholders.map(s=>s.id!==id?s:{
+      ...s,name:draft.name,role:draft.role,designation:draft.designation,bu:draft.bu,
+      email:draft.email,linkedin:draft.linkedin,reportsTo:draft.reportsTo,approvalRequired:draft.approvalRequired,
+    })}));
+    setEditingStakeholder(null);
+    flash("Stakeholder updated");
+  };
+
+  const deleteStakeholder=async(id)=>{
+    const {error}=await sb.from("stakeholders").delete().eq("id",id);
+    if(error){flash("Couldn't remove stakeholder");return;}
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{
+      ...d,
+      // Anyone who reported to the removed stakeholder becomes a root in the org chart
+      // rather than pointing at a now-nonexistent id.
+      stakeholders:d.stakeholders.filter(s=>s.id!==id).map(s=>s.reportsTo===id?{...s,reportsTo:null}:s),
+    }));
+    flash("Stakeholder removed");
   };
 
   // File-type/size limits are enforced for real by the deal-documents bucket's
@@ -1192,22 +1314,26 @@ select option{background:#fff}
           {tab==="summary"&&<div style={{maxWidth:820}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
               <div className="headline" style={{fontSize:22,color:P.text}}>Executive Summary</div>
-              {viewMode==="rep"&&<button onClick={()=>runAI("bizcase")} style={{padding:"8px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>✦ AI Refresh</button>}
+              {viewMode==="rep"&&<div style={{display:"flex",gap:8}}>
+                {editingSummary?<>
+                  <button onClick={()=>{updateExecSummary(summaryDraft);setEditingSummary(false);}} style={{padding:"8px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Save</button>
+                  <button onClick={()=>setEditingSummary(false)} style={{padding:"8px 16px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer"}}>Cancel</button>
+                </>:<>
+                  <button onClick={()=>{setSummaryDraft({problem:deal.execSummary?.problem||"",challenges:deal.execSummary?.challenges||[],solutions:deal.execSummary?.solutions||[]});setEditingSummary(true);}} style={{padding:"8px 16px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer"}}>Edit</button>
+                  <button onClick={()=>runAI("bizcase")} style={{padding:"8px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>✦ AI Refresh</button>
+                </>}
+              </div>}
             </div>
-            <div style={{display:"flex",alignItems:"center",gap:6,padding:"8px 12px",background:P.surface,border:`1px solid ${P.border}`,borderRadius:"8px 8px 0 0",borderBottom:"none"}}>
-              {["File","Edit","Insert","Format","Table"].map(m=><span key={m} style={{fontSize:12,color:P.textSec,cursor:"pointer",padding:"2px 6px"}}>{m}</span>)}
-              <div style={{flex:1}}/>
-              {["B","I","U"].map(f=><span key={f} style={{fontSize:12,fontWeight:700,color:P.textSec,cursor:"pointer",width:22,height:22,display:"flex",alignItems:"center",justifyContent:"center",borderRadius:3,border:`1px solid ${P.border}`}}>{f}</span>)}
-            </div>
-            <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:"0 0 12px 12px",padding:"28px 32px"}}>
-              <div style={{marginBottom:24}}><div style={{fontSize:16,fontWeight:800,color:P.text,marginBottom:10}}>The Problem</div>{(deal.execSummary?.problem||"").split("\n\n").map((para,i)=><p key={i} style={{fontSize:13,color:P.textSec,lineHeight:1.75,marginBottom:8}}>{para}</p>)}</div>
-              <div style={{marginBottom:24}}><div style={{fontSize:16,fontWeight:800,color:P.text,marginBottom:10}}>Key Challenges</div><ol style={{paddingLeft:20}}>{(deal.execSummary?.challenges||[]).map((c,i)=><li key={i} style={{fontSize:13,color:P.textSec,lineHeight:1.75,marginBottom:6}}>{c}</li>)}</ol></div>
-              <div><div style={{fontSize:16,fontWeight:800,color:P.text,marginBottom:10}}>Solutions</div><ol style={{paddingLeft:20}}>{(deal.execSummary?.solutions||[]).map((s,i)=><li key={i} style={{fontSize:13,color:P.textSec,lineHeight:1.75,marginBottom:6}}>{s}</li>)}</ol></div>
-            </div>
-            <div style={{display:"flex",gap:16,padding:"12px 16px",background:P.bg,borderTop:`1px solid ${P.border}`,alignItems:"center"}}>
-              <button onClick={()=>runAI("bizcase")} style={{display:"flex",alignItems:"center",gap:5,padding:"5px 10px",background:"none",border:`1px solid ${P.border}`,borderRadius:5,color:P.textSec,fontSize:11,fontWeight:600,cursor:"pointer"}}>✦ AI</button>
-              <span style={{fontSize:11,color:P.textMute}}>💬 {viewMode==="rep"?"4 Comments":"2 Comments"}</span>
-              <span style={{fontSize:11,color:P.textMute}}>↗ Share</span>
+            <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:12,padding:"28px 32px"}}>
+              {editingSummary?<>
+                <div style={{marginBottom:24}}><div style={{fontSize:16,fontWeight:800,color:P.text,marginBottom:10}}>The Problem</div><textarea value={summaryDraft.problem} onChange={e=>setSummaryDraft(d=>({...d,problem:e.target.value}))} style={{width:"100%",height:120,border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",lineHeight:1.6,resize:"vertical",outline:"none"}}/></div>
+                <div style={{marginBottom:24}}><div style={{fontSize:16,fontWeight:800,color:P.text,marginBottom:10}}>Key Challenges</div><EditableList items={summaryDraft.challenges} onChange={v=>setSummaryDraft(d=>({...d,challenges:v}))}/></div>
+                <div><div style={{fontSize:16,fontWeight:800,color:P.text,marginBottom:10}}>Solutions</div><EditableList items={summaryDraft.solutions} onChange={v=>setSummaryDraft(d=>({...d,solutions:v}))}/></div>
+              </>:<>
+                <div style={{marginBottom:24}}><div style={{fontSize:16,fontWeight:800,color:P.text,marginBottom:10}}>The Problem</div>{(deal.execSummary?.problem||"").split("\n\n").map((para,i)=><p key={i} style={{fontSize:13,color:P.textSec,lineHeight:1.75,marginBottom:8}}>{para}</p>)}</div>
+                <div style={{marginBottom:24}}><div style={{fontSize:16,fontWeight:800,color:P.text,marginBottom:10}}>Key Challenges</div><ol style={{paddingLeft:20}}>{(deal.execSummary?.challenges||[]).map((c,i)=><li key={i} style={{fontSize:13,color:P.textSec,lineHeight:1.75,marginBottom:6}}>{c}</li>)}</ol></div>
+                <div><div style={{fontSize:16,fontWeight:800,color:P.text,marginBottom:10}}>Solutions</div><ol style={{paddingLeft:20}}>{(deal.execSummary?.solutions||[]).map((s,i)=><li key={i} style={{fontSize:13,color:P.textSec,lineHeight:1.75,marginBottom:6}}>{s}</li>)}</ol></div>
+              </>}
             </div>
           </div>}
 
@@ -1267,42 +1393,78 @@ select option{background:#fff}
           {tab==="discovery"&&<div style={{maxWidth:860}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
               <div><div className="headline" style={{fontSize:22,color:P.text}}>Business Outcomes & Value Identification</div><div style={{fontSize:13,color:P.textSec,marginTop:3}}>{deal.company} · {deal.industry}</div></div>
-              {viewMode==="rep"&&<button onClick={()=>runAI("bizcase")} style={{padding:"8px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>✦ Build Business Case</button>}
+              {viewMode==="rep"&&<div style={{display:"flex",gap:8}}>
+                {editingDiscovery?<>
+                  <button onClick={()=>{updateDiscovery(discoveryDraft);setEditingDiscovery(false);}} style={{padding:"8px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Save</button>
+                  <button onClick={()=>setEditingDiscovery(false)} style={{padding:"8px 16px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer"}}>Cancel</button>
+                </>:<>
+                  <button onClick={()=>{setDiscoveryDraft({summary:deal.discovery.summary||"",corporateStrategy:deal.discovery.corporateStrategy||[],topOutcomes:deal.discovery.topOutcomes||[],challenges:deal.discovery.challenges||[],jobsToBeDone:deal.discovery.jobsToBeDone||[],primaryUseCase:deal.discovery.primaryUseCase||"",goals:{...deal.discovery.goals}});setEditingDiscovery(true);}} style={{padding:"8px 16px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer"}}>Edit</button>
+                  <button onClick={()=>runAI("bizcase")} style={{padding:"8px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>✦ Build Business Case</button>
+                </>}
+              </div>}
             </div>
-            {deal.discovery.summary&&<div style={{background:`linear-gradient(135deg,${P.accentLight},#EEF6FF)`,border:`1px solid #F0C9B7`,borderRadius:12,padding:"18px 22px",marginBottom:16,borderLeft:`4px solid ${P.accent}`}}>
-              <div style={{fontSize:11,fontWeight:800,color:P.accent,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Discovery Summary</div>
-              <p style={{fontSize:13,color:P.textSec,lineHeight:1.75}}>{deal.discovery.summary}</p>
-            </div>}
-            {[{key:"st",title:"Corporate Strategy & Growth Initiatives",icon:"◈",items:deal.discovery.corporateStrategy,color:P.accent,bg:P.accentLight,border:"#F0C9B7"},
-              {key:"ou",title:"Top Business Outcomes",icon:"◉",items:deal.discovery.topOutcomes,color:P.green,bg:P.greenBg,border:P.greenBorder},
-              {key:"ch",title:"Current Challenges",icon:"◌",items:deal.discovery.challenges,color:P.red,bg:P.redBg,border:P.redBorder},
-              {key:"jb",title:"Jobs to Be Done",icon:"◎",items:deal.discovery.jobsToBeDone,color:P.purple,bg:P.purpleBg,border:P.purpleBorder}
-            ].map(({key,title,icon,items,color,bg,border})=>(
-              <div key={key} style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:10,overflow:"hidden",marginBottom:12}}>
-                <div style={{padding:"13px 18px",background:bg,borderBottom:`1px solid ${border}`,display:"flex",alignItems:"center",gap:10}}>
-                  <span style={{color,fontSize:16}}>{icon}</span><span style={{fontSize:13,fontWeight:700,color}}>{title}</span>
-                  <span style={{marginLeft:"auto",fontSize:11,fontWeight:700,color,background:P.surface,border:`1px solid ${border}`,borderRadius:10,padding:"1px 8px"}}>{items.length}</span>
-                </div>
-                <div style={{padding:"8px 18px 14px"}}>
-                  {items.map((item,i)=><div key={i} style={{display:"flex",gap:10,padding:"9px 0",borderBottom:i<items.length-1?`1px solid ${P.bg}`:"none",alignItems:"flex-start"}}>
-                    <div style={{width:6,height:6,borderRadius:"50%",background:color,marginTop:6,flexShrink:0}}/><span style={{fontSize:13,color:P.textSec,lineHeight:1.5}}>{item}</span>
-                  </div>)}
-                </div>
-              </div>))}
-            <div style={{background:`linear-gradient(135deg,${P.accentLight},#EEF6FF)`,border:`1px solid #F0C9B7`,borderRadius:10,padding:"18px 20px",marginBottom:12}}>
-              <div style={{fontSize:11,fontWeight:800,color:P.accent,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Primary Use Case</div>
-              <p style={{fontSize:13,color:P.textSec,lineHeight:1.75}}>{deal.discovery.primaryUseCase}</p>
-            </div>
-            <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:10,overflow:"hidden"}}>
-              <div style={{padding:"13px 18px",borderBottom:`1px solid ${P.border}`,fontSize:13,fontWeight:700,color:P.text}}>Priority Goals & Objectives</div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr"}}>
-                {Object.entries(deal.discovery.goals).map(([period,goals],i,arr)=>(
-                  <div key={period} style={{padding:"16px 18px",borderRight:i<arr.length-1?`1px solid ${P.border}`:"none"}}>
-                    <div style={{fontSize:10,fontWeight:800,color:[P.accent,P.green,P.purple][i],textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10}}>{period}</div>
-                    {goals.map((g,j)=><div key={j} style={{display:"flex",gap:8,marginBottom:7}}><div style={{width:5,height:5,borderRadius:"50%",background:[P.accentMid,P.green,P.purple][i],marginTop:6,flexShrink:0}}/><span style={{fontSize:12,color:P.textSec,lineHeight:1.5}}>{g}</span></div>)}
-                  </div>))}
+            {editingDiscovery?<>
+              <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:10,padding:"16px 18px",marginBottom:16}}>
+                <div style={{fontSize:11,fontWeight:800,color:P.accent,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Discovery Summary</div>
+                <textarea value={discoveryDraft.summary} onChange={e=>setDiscoveryDraft(d=>({...d,summary:e.target.value}))} style={{width:"100%",height:70,border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",lineHeight:1.6,resize:"vertical",outline:"none"}}/>
               </div>
-            </div>
+              {[{key:"corporateStrategy",title:"Corporate Strategy & Growth Initiatives"},{key:"topOutcomes",title:"Top Business Outcomes"},{key:"challenges",title:"Current Challenges"},{key:"jobsToBeDone",title:"Jobs to Be Done"}].map(({key,title})=>(
+                <div key={key} style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:10,padding:"14px 18px",marginBottom:12}}>
+                  <div style={{fontSize:13,fontWeight:700,color:P.text,marginBottom:10}}>{title}</div>
+                  <EditableList items={discoveryDraft[key]} onChange={v=>setDiscoveryDraft(d=>({...d,[key]:v}))}/>
+                </div>
+              ))}
+              <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:10,padding:"16px 18px",marginBottom:12}}>
+                <div style={{fontSize:11,fontWeight:800,color:P.accent,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Primary Use Case</div>
+                <textarea value={discoveryDraft.primaryUseCase} onChange={e=>setDiscoveryDraft(d=>({...d,primaryUseCase:e.target.value}))} style={{width:"100%",height:70,border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",lineHeight:1.6,resize:"vertical",outline:"none"}}/>
+              </div>
+              <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:10,padding:"16px 18px"}}>
+                <div style={{fontSize:13,fontWeight:700,color:P.text,marginBottom:12}}>Priority Goals & Objectives</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:16}}>
+                  {Object.keys(discoveryDraft.goals).map(period=>(
+                    <div key={period}>
+                      <div style={{fontSize:10,fontWeight:800,color:P.accent,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10}}>{period}</div>
+                      <EditableList items={discoveryDraft.goals[period]} onChange={v=>setDiscoveryDraft(d=>({...d,goals:{...d.goals,[period]:v}}))}/>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>:<>
+              {deal.discovery.summary&&<div style={{background:`linear-gradient(135deg,${P.accentLight},#EEF6FF)`,border:`1px solid #F0C9B7`,borderRadius:12,padding:"18px 22px",marginBottom:16,borderLeft:`4px solid ${P.accent}`}}>
+                <div style={{fontSize:11,fontWeight:800,color:P.accent,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Discovery Summary</div>
+                <p style={{fontSize:13,color:P.textSec,lineHeight:1.75}}>{deal.discovery.summary}</p>
+              </div>}
+              {[{key:"st",title:"Corporate Strategy & Growth Initiatives",icon:"◈",items:deal.discovery.corporateStrategy,color:P.accent,bg:P.accentLight,border:"#F0C9B7"},
+                {key:"ou",title:"Top Business Outcomes",icon:"◉",items:deal.discovery.topOutcomes,color:P.green,bg:P.greenBg,border:P.greenBorder},
+                {key:"ch",title:"Current Challenges",icon:"◌",items:deal.discovery.challenges,color:P.red,bg:P.redBg,border:P.redBorder},
+                {key:"jb",title:"Jobs to Be Done",icon:"◎",items:deal.discovery.jobsToBeDone,color:P.purple,bg:P.purpleBg,border:P.purpleBorder}
+              ].map(({key,title,icon,items,color,bg,border})=>(
+                <div key={key} style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:10,overflow:"hidden",marginBottom:12}}>
+                  <div style={{padding:"13px 18px",background:bg,borderBottom:`1px solid ${border}`,display:"flex",alignItems:"center",gap:10}}>
+                    <span style={{color,fontSize:16}}>{icon}</span><span style={{fontSize:13,fontWeight:700,color}}>{title}</span>
+                    <span style={{marginLeft:"auto",fontSize:11,fontWeight:700,color,background:P.surface,border:`1px solid ${border}`,borderRadius:10,padding:"1px 8px"}}>{items.length}</span>
+                  </div>
+                  <div style={{padding:"8px 18px 14px"}}>
+                    {items.map((item,i)=><div key={i} style={{display:"flex",gap:10,padding:"9px 0",borderBottom:i<items.length-1?`1px solid ${P.bg}`:"none",alignItems:"flex-start"}}>
+                      <div style={{width:6,height:6,borderRadius:"50%",background:color,marginTop:6,flexShrink:0}}/><span style={{fontSize:13,color:P.textSec,lineHeight:1.5}}>{item}</span>
+                    </div>)}
+                  </div>
+                </div>))}
+              <div style={{background:`linear-gradient(135deg,${P.accentLight},#EEF6FF)`,border:`1px solid #F0C9B7`,borderRadius:10,padding:"18px 20px",marginBottom:12}}>
+                <div style={{fontSize:11,fontWeight:800,color:P.accent,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Primary Use Case</div>
+                <p style={{fontSize:13,color:P.textSec,lineHeight:1.75}}>{deal.discovery.primaryUseCase}</p>
+              </div>
+              <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:10,overflow:"hidden"}}>
+                <div style={{padding:"13px 18px",borderBottom:`1px solid ${P.border}`,fontSize:13,fontWeight:700,color:P.text}}>Priority Goals & Objectives</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr"}}>
+                  {Object.entries(deal.discovery.goals).map(([period,goals],i,arr)=>(
+                    <div key={period} style={{padding:"16px 18px",borderRight:i<arr.length-1?`1px solid ${P.border}`:"none"}}>
+                      <div style={{fontSize:10,fontWeight:800,color:[P.accent,P.green,P.purple][i],textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10}}>{period}</div>
+                      {goals.map((g,j)=><div key={j} style={{display:"flex",gap:8,marginBottom:7}}><div style={{width:5,height:5,borderRadius:"50%",background:[P.accentMid,P.green,P.purple][i],marginTop:6,flexShrink:0}}/><span style={{fontSize:12,color:P.textSec,lineHeight:1.5}}>{g}</span></div>)}
+                    </div>))}
+                </div>
+              </div>
+            </>}
           </div>}
 
           {/* CONTENT */}
@@ -1343,6 +1505,7 @@ select option{background:#fff}
               <div style={{display:"flex",gap:8}}>
                 <button onClick={()=>setOrgView(!orgView)} style={{padding:"6px 14px",background:orgView?P.accentLight:P.surface,border:`1px solid ${orgView?P.accentMid:P.border}`,borderRadius:6,color:orgView?P.accent:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer"}}>{orgView?"List View":"Org Chart"}</button>
                 {viewMode==="rep"&&<button onClick={()=>runAI("nextsteps")} style={{padding:"6px 14px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer"}}>✦ Engagement Strategy</button>}
+                {viewMode==="rep"&&<button onClick={()=>setShowStakeholderModal(true)} style={{padding:"6px 14px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>+ Add Stakeholder</button>}
               </div>
             </div>
             {orgView?<div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:12,padding:"32px 24px",overflowX:"auto"}}>
@@ -1366,9 +1529,19 @@ select option{background:#fff}
                   <div style={{display:"flex",gap:8,flexDirection:"column",alignItems:"flex-end"}}>
                     <a href={s.linkedin} target="_blank" rel="noopener noreferrer" style={{display:"flex",alignItems:"center",gap:5,padding:"5px 10px",background:"#EBF5FF",border:"1px solid #F0C9B7",borderRadius:6,color:"#0A66C2",fontSize:11,fontWeight:700,textDecoration:"none"}}>{LI_SVG}LinkedIn</a>
                     {viewMode==="rep"&&<button onClick={()=>{setChatInput(`How do I engage ${s.name} (${s.role}, ${s.designation})?`);setAiOpen(true);}} style={{padding:"5px 10px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:11,fontWeight:600,cursor:"pointer"}}>Coach me</button>}
+                    {viewMode==="rep"&&<div style={{display:"flex",gap:8}}>
+                      <button onClick={()=>setEditingStakeholder(s)} style={{background:"none",border:"none",color:P.textMute,fontSize:11,fontWeight:600,cursor:"pointer"}}>Edit</button>
+                      <button onClick={()=>deleteStakeholder(s.id)} style={{background:"none",border:"none",color:P.red,fontSize:11,fontWeight:600,cursor:"pointer"}}>Remove</button>
+                    </div>}
                   </div>
                 </div>);})}
             </div>}
+            {(showStakeholderModal||editingStakeholder)&&<StakeholderModal
+              editing={editingStakeholder}
+              allStakeholders={deal.stakeholders}
+              onClose={()=>{setShowStakeholderModal(false);setEditingStakeholder(null);}}
+              onSave={draft=>editingStakeholder?updateStakeholder(editingStakeholder.id,draft):addStakeholder(draft)}
+            />}
           </div>}
 
           {/* ANALYTICS */}
