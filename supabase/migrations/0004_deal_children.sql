@@ -4,7 +4,11 @@
 
 create table stakeholders (
   id uuid primary key default gen_random_uuid(),
-  deal_id uuid not null references deals (id) on delete cascade,
+  -- deal_id has no standalone FK here -- only the composite (deal_id, org_id) FK below.
+  -- A second, redundant plain FK to deals(id) would give PostgREST two valid
+  -- relationship paths between these tables and break `.select('*, stakeholders(*)')`
+  -- embeds with a PGRST201 ambiguity error.
+  deal_id uuid not null,
   org_id uuid not null,
 
   name text not null,
@@ -21,7 +25,7 @@ create table stakeholders (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
 
-  constraint stakeholders_deal_org_fk foreign key (deal_id, org_id) references deals (id, org_id),
+  constraint stakeholders_deal_org_fk foreign key (deal_id, org_id) references deals (id, org_id) on delete cascade,
   constraint stakeholders_id_deal_uniq unique (deal_id, id),
   constraint stakeholders_reports_to_fk foreign key (deal_id, reports_to)
     references stakeholders (deal_id, id) on delete set null
@@ -58,7 +62,8 @@ create policy stakeholders_delete on stakeholders
 
 create table deal_tasks (
   id uuid primary key default gen_random_uuid(),
-  deal_id uuid not null references deals (id) on delete cascade,
+  -- No standalone deal_id FK -- see the comment on stakeholders above.
+  deal_id uuid not null,
   org_id uuid not null,
 
   phase text not null check (phase in ('Value Alignment', 'Trial Sessions', 'Business Case', 'Paper Process')),
@@ -76,7 +81,7 @@ create table deal_tasks (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
 
-  constraint deal_tasks_deal_org_fk foreign key (deal_id, org_id) references deals (id, org_id)
+  constraint deal_tasks_deal_org_fk foreign key (deal_id, org_id) references deals (id, org_id) on delete cascade
 );
 
 create index on deal_tasks (deal_id);
@@ -110,7 +115,8 @@ create policy deal_tasks_delete on deal_tasks
 
 create table documents (
   id uuid primary key default gen_random_uuid(),
-  deal_id uuid not null references deals (id) on delete cascade,
+  -- No standalone deal_id FK -- see the comment on stakeholders above.
+  deal_id uuid not null,
   org_id uuid not null,
 
   title text not null,
@@ -122,7 +128,7 @@ create table documents (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
 
-  constraint documents_deal_org_fk foreign key (deal_id, org_id) references deals (id, org_id),
+  constraint documents_deal_org_fk foreign key (deal_id, org_id) references deals (id, org_id) on delete cascade,
   constraint documents_id_org_uniq unique (id, org_id)
 );
 

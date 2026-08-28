@@ -12,13 +12,15 @@
 
 create table prospect_sessions (
   id uuid primary key default gen_random_uuid(),
-  deal_id uuid not null references deals (id) on delete cascade,
+  -- No standalone deal_id FK -- a second relationship path to deals would break
+  -- PostgREST's embed disambiguation (see 0004's stakeholders table for the full note).
+  deal_id uuid not null,
   org_id uuid not null,
   email text not null,
   authenticated_at timestamptz not null default now(),
   expires_at timestamptz not null default (now() + interval '30 days'),
 
-  constraint prospect_sessions_deal_org_fk foreign key (deal_id, org_id) references deals (id, org_id)
+  constraint prospect_sessions_deal_org_fk foreign key (deal_id, org_id) references deals (id, org_id) on delete cascade
 );
 
 create index on prospect_sessions (deal_id);
@@ -60,13 +62,14 @@ create policy prospect_access_attempts_select on prospect_access_attempts
 
 create table document_views (
   id uuid primary key default gen_random_uuid(),
-  document_id uuid not null references documents (id) on delete cascade,
+  -- No standalone document_id FK -- see the note on stakeholders in 0004.
+  document_id uuid not null,
   org_id uuid not null,
   stakeholder_id uuid references stakeholders (id) on delete set null,
   prospect_session_id uuid references prospect_sessions (id) on delete set null,
   viewed_at timestamptz not null default now(),
 
-  constraint document_views_doc_org_fk foreign key (document_id, org_id) references documents (id, org_id)
+  constraint document_views_doc_org_fk foreign key (document_id, org_id) references documents (id, org_id) on delete cascade
 );
 
 create index on document_views (document_id);
@@ -96,7 +99,8 @@ create policy document_views_select on document_views
 
 create table deal_visits (
   id uuid primary key default gen_random_uuid(),
-  deal_id uuid not null references deals (id) on delete cascade,
+  -- No standalone deal_id FK -- see the note on stakeholders in 0004.
+  deal_id uuid not null,
   org_id uuid not null,
   stakeholder_id uuid references stakeholders (id) on delete set null,
   prospect_session_id uuid references prospect_sessions (id) on delete set null,
@@ -107,7 +111,7 @@ create table deal_visits (
   duration_seconds int,
   created_at timestamptz not null default now(),
 
-  constraint deal_visits_deal_org_fk foreign key (deal_id, org_id) references deals (id, org_id),
+  constraint deal_visits_deal_org_fk foreign key (deal_id, org_id) references deals (id, org_id) on delete cascade,
   constraint deal_visits_id_org_uniq unique (id, org_id)
 );
 
@@ -125,14 +129,15 @@ create policy deal_visits_select on deal_visits
 
 create table deal_visit_actions (
   id uuid primary key default gen_random_uuid(),
-  visit_id uuid not null references deal_visits (id) on delete cascade,
+  -- No standalone visit_id FK -- see the note on stakeholders in 0004.
+  visit_id uuid not null,
   org_id uuid not null,
   action_type text not null check (action_type in ('viewed', 'downloaded', 'commented')),
   document_id uuid references documents (id) on delete set null,
   item_label text,
   occurred_at timestamptz not null default now(),
 
-  constraint deal_visit_actions_visit_org_fk foreign key (visit_id, org_id) references deal_visits (id, org_id)
+  constraint deal_visit_actions_visit_org_fk foreign key (visit_id, org_id) references deal_visits (id, org_id) on delete cascade
 );
 
 create index on deal_visit_actions (visit_id);

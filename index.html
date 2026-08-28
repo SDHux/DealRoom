@@ -54,21 +54,45 @@
 
   <div id="root"></div>
 
+  <script>
+    // Surfaces any uncaught error or rejected promise directly on the page -- without
+    // this, a script-load failure or an exception outside React's render (e.g. in a
+    // useEffect) can leave a blank white screen with nothing in the console pointing
+    // to why, especially once minified production builds are involved.
+    function showFatalError(message) {
+      const loader = document.getElementById('loading');
+      if (loader) loader.style.display = 'none';
+      const root = document.getElementById('root');
+      root.innerHTML = '';
+      const box = document.createElement('div');
+      box.style.cssText = 'min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;text-align:center;font-family:sans-serif;';
+      box.innerHTML = '<div style="font-size:16px;font-weight:700;color:#111827">Something went wrong loading DealRoom</div>'
+        + '<div style="font-size:13px;color:#4B5563;max-width:480px;font-family:monospace;white-space:pre-wrap">' + String(message).replace(/</g, '&lt;') + '</div>'
+        + '<button onclick="window.location.reload()" style="padding:10px 20px;background:#1A4FBA;border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer">Reload</button>';
+      root.appendChild(box);
+    }
+    window.addEventListener('error', e => showFatalError(e.error ? (e.error.stack || e.error.message) : e.message));
+    window.addEventListener('unhandledrejection', e => showFatalError(e.reason && (e.reason.stack || e.reason.message) || e.reason));
+  </script>
+
   <script type="text/babel" data-presets="react" src="app.jsx"></script>
 
   <script>
     // Mount the app once Babel has processed app.jsx
     // Babel standalone processes external scripts async — poll for component
+    let mountAttempts = 0;
     function mount() {
-      if (typeof DealRoom !== 'undefined') {
+      if (typeof DealRoomMount !== 'undefined') {
         const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(React.createElement(DealRoom));
+        root.render(React.createElement(DealRoomMount));
         // Fade out loading screen
         const loader = document.getElementById('loading');
         loader.style.opacity = '0';
         setTimeout(() => loader.style.display = 'none', 400);
-      } else {
+      } else if (mountAttempts++ < 125) { // ~10s of polling at 80ms
         setTimeout(mount, 80);
+      } else {
+        showFatalError('app.jsx never finished loading (DealRoomMount was never defined). Check for a syntax error in app.jsx, or that all CDN scripts (React, Supabase, Babel) loaded successfully.');
       }
     }
     // Give Babel a moment to parse the JSX file

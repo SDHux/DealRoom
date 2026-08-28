@@ -4,6 +4,9 @@ const { useState, useEffect } = React;
 // protected by RLS, not secrecy -- same as any other public constant in this file.
 const SUPABASE_URL = "https://hjumgvnuqvmxdusldeba.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_gRA_qf4uQVX9BKhJHuV6hQ_oMRTypV3";
+if (typeof supabase === "undefined" || !supabase.createClient) {
+  throw new Error("Supabase client library failed to load from CDN -- check that the supabase-js <script> tag in index.html loaded successfully (network/ad-blocker issue?).");
+}
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // A prospect reaches one deal via an unguessable link (/d/{share_slug}), never a picker.
@@ -366,7 +369,17 @@ const NameYourOrg = ({onDone}) => {
   const submit=async()=>{
     setLoading(true);setError("");
     const {error:rpcErr}=await sb.rpc("create_organization_with_owner",{p_org_name:orgName,p_full_name:null});
-    if(rpcErr){setError(rpcErr.message);setLoading(false);return;}
+    if(rpcErr){
+      // This screen can render on a stale race: signup already created the org via its
+      // own RPC call, but the auth-state-triggered membership check in the parent ran
+      // before that call resolved, showing this screen when the user actually already
+      // has an org. Don't trust the RPC error text alone -- check reality and proceed if
+      // a membership now exists; only surface the error if it genuinely doesn't.
+      const {data:{user}}=await sb.auth.getUser();
+      const {data:mem}=await sb.from("organization_members").select("org_id").eq("user_id",user.id).limit(1).maybeSingle();
+      if(mem){onDone();return;}
+      setError(rpcErr.message);setLoading(false);return;
+    }
     onDone();
   };
   const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:8,padding:"11px 14px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
@@ -404,11 +417,14 @@ function DealRoom({prospectShareSlug}) {
   const [orgView,setOrgView]=useState(false);
   const [activeLog,setActiveLog]=useState(null);
   const [selCat,setSelCat]=useState("All");
+  const [initError,setInitError]=useState(null);
 
-  // Rep path only: track the Supabase Auth session.
+  // Rep path only: track the Supabase Auth session. Errors here (e.g. a network/CORS
+  // problem reaching Supabase) are surfaced instead of leaving the app stuck silently on
+  // the loading screen forever.
   useEffect(()=>{
     if(prospectShareSlug)return;
-    sb.auth.getSession().then(({data})=>setSession(data.session));
+    sb.auth.getSession().then(({data})=>setSession(data.session)).catch(e=>setInitError(e.message||String(e)));
     const {data:sub}=sb.auth.onAuthStateChange((_event,s)=>setSession(s));
     return ()=>sub.subscription.unsubscribe();
   },[prospectShareSlug]);
@@ -419,13 +435,28 @@ function DealRoom({prospectShareSlug}) {
     let cancelled=false;
     (async()=>{
       setLoadingDeals(true);
-      const {data:mem}=await sb.from("organization_members").select("org_id").eq("user_id",session.user.id).limit(1).maybeSingle();
+      try{
+      let {data:mem,error:memErr}=await sb.from("organization_members").select("org_id").eq("user_id",session.user.id).limit(1).maybeSingle();
       if(cancelled)return;
+      if(memErr)throw memErr;
+      if(!mem){
+        // Right after signup, this can legitimately race the signup RPC that's still
+        // creating the org/membership row -- one short retry before concluding the user
+        // really does need the "name your organization" fallback screen.
+        await new Promise(r=>setTimeout(r,1000));
+        if(cancelled)return;
+        ({data:mem,error:memErr}=await sb.from("organization_members").select("org_id").eq("user_id",session.user.id).limit(1).maybeSingle());
+        if(cancelled)return;
+        if(memErr)throw memErr;
+      }
       if(!mem){setNeedsOrgSetup(true);setLoadingDeals(false);return;}
       setNeedsOrgSetup(false);
       setOrgId(mem.org_id);
-      const {data:rows}=await sb.from("deals").select("*, stakeholders(*), deal_tasks(*), documents(*)").eq("org_id",mem.org_id).is("archived_at",null);
+      const {data:rows,error:rowsErr}=await sb.from("deals").select("*, stakeholders(*), deal_tasks(*), documents(*)").eq("org_id",mem.org_id).is("archived_at",null);
       if(cancelled)return;
+      // A failed query must not be silently treated as "zero deals exist" -- surface it
+      // as a real error instead (caught below), same principle as the rest of this fix.
+      if(rowsErr)throw rowsErr;
       const mapped=(rows||[]).map(mapDealFromDb);
 
       // View counts and activity log are event-table aggregates, not stored fields --
@@ -468,6 +499,9 @@ function DealRoom({prospectShareSlug}) {
       setDeals(enriched);
       setActiveId(enriched[0]?.id??null);
       setLoadingDeals(false);
+      }catch(e){
+        if(!cancelled){setInitError(e.message||String(e));setLoadingDeals(false);}
+      }
     })();
     return ()=>{cancelled=true;};
   },[session,prospectShareSlug,refreshKey]);
@@ -553,6 +587,14 @@ input:focus,select:focus,textarea:focus{border-color:${P.accent}!important;box-s
 select option{background:#fff}`;
 
   const LoadingScreen=()=><div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:P.textMute,fontSize:13}}>Loading…</div>;
+
+  if(initError){
+    return <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:12,padding:24,textAlign:"center",fontFamily:"'Plus Jakarta Sans','Segoe UI',sans-serif"}}>
+      <div style={{fontSize:16,fontWeight:700,color:P.text}}>Couldn't load DealRoom</div>
+      <div style={{fontSize:13,color:P.textSec,maxWidth:480,fontFamily:"monospace",whiteSpace:"pre-wrap"}}>{initError}</div>
+      <button onClick={()=>window.location.reload()} style={{padding:"10px 20px",background:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>Reload</button>
+    </div>;
+  }
 
   // Real external prospect, reached via /d/{share_slug}: no picker, no auth gate, no
   // branding until the access code is verified server-side.
@@ -1009,4 +1051,33 @@ select option{background:#fff}`;
   </div>;
 }
 
-globalThis.DealRoom = () => React.createElement(DealRoom, { prospectShareSlug: PROSPECT_ROUTE });
+// Catches any render-time exception in the tree below and shows a real, visible message
+// instead of an unhandled crash leaving a blank white page with no clue why.
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error("DealRoom crashed:", error, info); }
+  render() {
+    if (this.state.error) {
+      return React.createElement("div", {
+        style: { minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, padding: 24, textAlign: "center", fontFamily: "'Plus Jakarta Sans','Segoe UI',sans-serif" }
+      },
+        React.createElement("div", { style: { fontSize: 16, fontWeight: 700, color: "#111827" } }, "Something went wrong"),
+        React.createElement("div", { style: { fontSize: 13, color: "#4B5563", maxWidth: 480, fontFamily: "monospace", whiteSpace: "pre-wrap" } }, String(this.state.error && this.state.error.message || this.state.error)),
+        React.createElement("button", {
+          onClick: () => window.location.reload(),
+          style: { padding: "10px 20px", background: "#1A4FBA", border: "none", borderRadius: 8, color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer" }
+        }, "Reload")
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// Named distinctly from the DealRoom function itself -- assigning globalThis.DealRoom
+// here would overwrite that same top-level binding (classic script, not a module, so
+// they're the same global property), making this wrapper self-referential and causing
+// infinite recursion the moment React actually renders it.
+globalThis.DealRoomMount = () => React.createElement(ErrorBoundary, null,
+  React.createElement(DealRoom, { prospectShareSlug: PROSPECT_ROUTE })
+);
