@@ -344,10 +344,55 @@ const OrgNode = ({s,all,depth=0}) => {
   </div>);
 };
 
-const DealCreator = ({onSave,onClose}) => {
+// Fixed expected headers (case-insensitive, trimmed, with a couple of common aliases)
+// rather than a full drag-and-drop column-mapping UI -- the same "simple, explainable"
+// level as the risk-signal thresholds, not over-engineered for a feature nobody's used
+// yet. Matches DealCreator's own manual-entry field set exactly.
+const IMPORT_HEADER_ALIASES = {
+  company:["company","company name"], contact:["contact","primary contact","contact name"],
+  title:["title","deal title"], value:["value","deal value"], closeDate:["close date","closedate"],
+  industry:["industry"], accessCode:["access code","accesscode"], welcomeMsg:["welcome message","welcome msg"],
+};
+const pickField=(normalizedRow,aliases)=>{for(const a of aliases){if(normalizedRow[a]!==undefined&&normalizedRow[a]!=="")return normalizedRow[a];}return "";};
+const IMPORT_TEMPLATE_HEADERS=["Company","Contact","Title","Value","Close Date","Industry","Access Code","Welcome Message"];
+
+const DealCreator = ({onSave,onImport,onClose}) => {
   const [step,setStep]=useState(1);const [mode,setMode]=useState(null);const [tx,setTx]=useState("");const [loading,setLoading]=useState(false);
+  const [importRows,setImportRows]=useState([]);const [importErrors,setImportErrors]=useState([]);const [importFileName,setImportFileName]=useState("");
   const blank={company:"",contact:"",title:"",value:"",closeDate:"",industry:"",logo:"",color:"#1A4FBA",accessCode:"",includeTrialSessions:true,welcomeMsg:"",execSummary:{problem:"",challenges:[],solutions:[]},discovery:{summary:"",corporateStrategy:[],topOutcomes:[],challenges:[],jobsToBeDone:[],primaryUseCase:"",goals:{"90 Days":[],"1 Year":[],"Beyond":[]}},stakeholders:[],mapItems:[],content:[],activityLog:[]};
   const [draft,setDraft]=useState(blank);
+  const downloadTemplate=()=>{
+    const csv=IMPORT_TEMPLATE_HEADERS.join(",")+"\n";
+    const blob=new Blob([csv],{type:"text/csv"});
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);a.download="deal-import-template.csv";a.click();
+    URL.revokeObjectURL(a.href);
+  };
+  const handleImportFile=async file=>{
+    setImportFileName(file.name);
+    const buf=await file.arrayBuffer();
+    const wb=XLSX.read(buf,{type:"array"});
+    const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:""});
+    const drafts=[];const errors=[];
+    rows.forEach((row,i)=>{
+      const norm=Object.fromEntries(Object.entries(row).map(([k,v])=>[String(k).trim().toLowerCase(),v]));
+      const company=String(pickField(norm,IMPORT_HEADER_ALIASES.company)).trim();
+      if(!company){errors.push(`Row ${i+2}: missing Company, skipped`);return;}
+      drafts.push({
+        ...blank,
+        company,
+        contact:String(pickField(norm,IMPORT_HEADER_ALIASES.contact)).trim(),
+        title:String(pickField(norm,IMPORT_HEADER_ALIASES.title)).trim(),
+        value:String(pickField(norm,IMPORT_HEADER_ALIASES.value)).trim(),
+        closeDate:String(pickField(norm,IMPORT_HEADER_ALIASES.closeDate)).trim(),
+        industry:String(pickField(norm,IMPORT_HEADER_ALIASES.industry)).trim(),
+        accessCode:String(pickField(norm,IMPORT_HEADER_ALIASES.accessCode)).trim(),
+        welcomeMsg:String(pickField(norm,IMPORT_HEADER_ALIASES.welcomeMsg)).trim(),
+        logo:company.slice(0,2).toUpperCase(),
+      });
+    });
+    setImportRows(drafts);setImportErrors(errors);
+  };
   const gen=async()=>{setLoading(true);const res=await callClaude("You are an enterprise sales AI. Return ONLY valid JSON no markdown.",`Extract: company,contact,title,value,industry,accessCode(6-char uppercase),welcomeMsg(2 sentences),execSummary.problem(2 paragraphs),execSummary.challenges(array 4),execSummary.solutions(array 4),discovery.summary(2 sentences),discovery.corporateStrategy(array 3),discovery.topOutcomes(array 3),discovery.challenges(array 4),discovery.jobsToBeDone(array 3),discovery.primaryUseCase,discovery.goals({"90 Days":[],"1 Year":[],"Beyond":[]}),stakeholders(array:name,role,designation,bu,linkedin).\n\n${tx}`,2000);
     try{const p=JSON.parse(res.replace(/```json|```/g,"").trim());const init=n=>n.split(" ").map(x=>x[0]).join("").toUpperCase().slice(0,2);setDraft(v=>({...v,...p,logo:(p.company||"").slice(0,2).toUpperCase(),execSummary:p.execSummary||v.execSummary,discovery:{...v.discovery,...(p.discovery||{})},stakeholders:(p.stakeholders||[]).map((s,i)=>({id:`s${i+1}`,...s,initials:init(s.name||""),engagement:50,lastSeen:"Just added",approvalRequired:s.designation==="decision-maker"||s.designation==="blocker",docsViewed:[],reportsTo:null})),mapItems:["Value Alignment","Business Case","Paper Process"].map((ph,pi)=>({id:pi*10+1,phase:ph,task:`${ph} Kickoff`,owner:"Mark H.",buyerOwner:p.contact||"",dueDate:"",status:"pending",notes:"",approvalRequired:false})),activityLog:[]}));setStep(3);}catch{setStep(3);}setLoading(false);};
   const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
@@ -355,14 +400,14 @@ const DealCreator = ({onSave,onClose}) => {
   return (<div style={{position:"fixed",inset:0,background:"rgba(17,24,39,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
     <div style={{background:P.surface,borderRadius:16,width:680,maxHeight:"88vh",overflowY:"auto",boxShadow:"0 24px 64px rgba(0,0,0,0.16)"}}>
       <div style={{padding:"20px 24px 16px",borderBottom:`1px solid ${P.border}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-        <div><div className="headline" style={{fontSize:19,color:P.text}}>Create Deal Room</div><div style={{fontSize:12,color:P.textSec,marginTop:2}}>Step {step} of 3 · {["Choose Method","AI Generation","Review & Save"][step-1]}</div></div>
+        <div><div className="headline" style={{fontSize:19,color:P.text}}>Create Deal Room{mode==="import"?"s":""}</div><div style={{fontSize:12,color:P.textSec,marginTop:2}}>{mode==="import"?"Import from Spreadsheet":`Step ${step} of 3 · ${["Choose Method","AI Generation","Review & Save"][step-1]}`}</div></div>
         <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,color:P.textMute,cursor:"pointer"}}>×</button>
       </div>
       <div style={{padding:24}}>
         {step===1&&<div><div style={{fontSize:14,color:P.textSec,marginBottom:20}}>How would you like to create this deal room?</div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            {[{key:"transcript",icon:"🎙️",title:"From Transcript / Notes",desc:"Paste call notes. AI extracts all deal details automatically."},{key:"manual",icon:"✏️",title:"Build Manually",desc:"Enter deal details step by step with full control."}].map(o=>(
-              <div key={o.key} onClick={()=>{setMode(o.key);setStep(o.key==="transcript"?2:3);}} style={{border:`2px solid ${P.border}`,borderRadius:10,padding:20,cursor:"pointer"}} onMouseOver={e=>{e.currentTarget.style.borderColor=P.accent;e.currentTarget.style.background=P.accentLight;}} onMouseOut={e=>{e.currentTarget.style.borderColor=P.border;e.currentTarget.style.background=P.surface;}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+            {[{key:"transcript",icon:"🎙️",title:"From Transcript / Notes",desc:"Paste call notes. AI extracts all deal details automatically."},{key:"manual",icon:"✏️",title:"Build Manually",desc:"Enter deal details step by step with full control."},{key:"import",icon:"📊",title:"Import from Spreadsheet",desc:"Onboard your existing pipeline -- one row becomes one deal room."}].map(o=>(
+              <div key={o.key} onClick={()=>{setMode(o.key);setStep(o.key==="transcript"?2:o.key==="import"?4:3);}} style={{border:`2px solid ${P.border}`,borderRadius:10,padding:20,cursor:"pointer"}} onMouseOver={e=>{e.currentTarget.style.borderColor=P.accent;e.currentTarget.style.background=P.accentLight;}} onMouseOut={e=>{e.currentTarget.style.borderColor=P.border;e.currentTarget.style.background=P.surface;}}>
                 <div style={{fontSize:28,marginBottom:10}}>{o.icon}</div><div style={{fontSize:14,fontWeight:700,color:P.text,marginBottom:6}}>{o.title}</div><div style={{fontSize:12,color:P.textSec,lineHeight:1.5}}>{o.desc}</div>
               </div>))}
           </div>
@@ -386,6 +431,28 @@ const DealCreator = ({onSave,onClose}) => {
           <div style={{display:"flex",gap:10}}>
             <button onClick={()=>{if(!draft.company)return;onSave({...draft,id:Date.now(),logo:draft.logo||draft.company.slice(0,2).toUpperCase(),engagement:50});}} style={{flex:1,padding:"11px 20px",background:P.accent,border:"none",borderRadius:7,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>Save Deal Room →</button>
             <button onClick={()=>setStep(mode==="transcript"?2:1)} style={{padding:"11px 18px",background:"none",border:`1px solid ${P.border}`,borderRadius:7,color:P.textSec,fontSize:13,cursor:"pointer"}}>Back</button>
+          </div>
+        </div>}
+        {step===4&&<div>
+          <div style={{fontSize:13,color:P.textSec,marginBottom:16,lineHeight:1.6}}>Upload a spreadsheet where each row is one deal. Not sure of the format? Download the template below, fill it in, and upload it back.</div>
+          <button onClick={downloadTemplate} style={{display:"flex",alignItems:"center",gap:6,padding:"9px 16px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:7,color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer",marginBottom:16}}>↓ Download Template</button>
+          <label style={{display:"block",padding:"20px",border:`1.5px dashed ${P.border}`,borderRadius:10,textAlign:"center",cursor:"pointer",marginBottom:16,color:P.textSec,fontSize:13}}>
+            {importFileName||"Click to choose a .csv or .xlsx file"}
+            <input type="file" accept=".csv,.xlsx,.xls" onChange={e=>e.target.files[0]&&handleImportFile(e.target.files[0])} style={{display:"none"}}/>
+          </label>
+          {importFileName&&<>
+            {importRows.length>0&&<div style={{background:P.greenBg,border:`1px solid ${P.greenBorder}`,borderRadius:8,padding:"12px 16px",marginBottom:12}}>
+              <div style={{fontSize:13,fontWeight:700,color:P.green,marginBottom:6}}>{importRows.length} deal{importRows.length===1?"":"s"} will be created</div>
+              <div style={{fontSize:12,color:P.textSec,lineHeight:1.6}}>{importRows.slice(0,5).map(r=>r.company).join(", ")}{importRows.length>5?`, +${importRows.length-5} more`:""}</div>
+            </div>}
+            {importErrors.length>0&&<div style={{background:P.amberBg,border:`1px solid ${P.amberBorder}`,borderRadius:8,padding:"12px 16px",marginBottom:16}}>
+              <div style={{fontSize:13,fontWeight:700,color:P.amber,marginBottom:6}}>{importErrors.length} row{importErrors.length===1?"":"s"} skipped</div>
+              {importErrors.map((e,i)=><div key={i} style={{fontSize:12,color:P.textSec,marginBottom:2}}>{e}</div>)}
+            </div>}
+          </>}
+          <div style={{display:"flex",gap:10}}>
+            <button onClick={()=>importRows.length&&onImport(importRows)} disabled={!importRows.length} style={{flex:1,padding:"11px 20px",background:importRows.length?P.accent:P.border,border:"none",borderRadius:7,color:"#fff",fontSize:13,fontWeight:700,cursor:importRows.length?"pointer":"not-allowed"}}>Create {importRows.length||""} Deal Room{importRows.length===1?"":"s"} →</button>
+            <button onClick={()=>{setMode(null);setImportRows([]);setImportErrors([]);setImportFileName("");setStep(1);}} style={{padding:"11px 18px",background:"none",border:`1px solid ${P.border}`,borderRadius:7,color:P.textSec,fontSize:13,cursor:"pointer"}}>Back</button>
           </div>
         </div>}
       </div>
@@ -897,7 +964,11 @@ function DealRoom({prospectShareSlug}) {
   const deal=deals.find(d=>d.id===activeId);
   const flash=msg=>{setToast(msg);setTimeout(()=>setToast(null),2800);};
 
-  const createDeal=async(draft)=>{
+  // Just the inserts, no UI feedback -- shared by the single-deal flow (createDeal) and
+  // the bulk spreadsheet import (importDeals), which each need their own toast/refresh
+  // behavior (one per deal vs. one summary for the whole batch) rather than duplicating
+  // this insert logic twice.
+  const insertDeal=async(draft)=>{
     const slugBase=(draft.company||"deal").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"")||"deal";
     const shareSlug=`${slugBase}-${crypto.randomUUID().slice(0,8)}`;
     const accessCode=(draft.accessCode||Math.random().toString(36).slice(2,8).toUpperCase()).toUpperCase();
@@ -921,7 +992,7 @@ function DealRoom({prospectShareSlug}) {
       share_slug:shareSlug,
       access_code:accessCode,
     }).select().single();
-    if(error||!newDeal){flash("Couldn't create deal room");return;}
+    if(error||!newDeal)return{ok:false};
 
     if((draft.stakeholders||[]).length){
       await sb.from("stakeholders").insert(draft.stakeholders.map(s=>({
@@ -937,9 +1008,26 @@ function DealRoom({prospectShareSlug}) {
         status:t.status||"pending",notes:t.notes||null,approval_required:!!t.approvalRequired,sort_order:i,
       })));
     }
+    return{ok:true,id:newDeal.id};
+  };
 
+  const createDeal=async(draft)=>{
+    const{ok}=await insertDeal(draft);
+    if(!ok){flash("Couldn't create deal room");return;}
     setShowCreator(false);
     flash("Deal room created!");
+    setRefreshKey(k=>k+1);
+  };
+
+  // One row = one deal, per Mark's explicit scope call: bulk-onboarding an existing
+  // pipeline, not bulk-adding stakeholders into a single deal. Sequential toast/refresh
+  // (not per-row) -- see insertDeal's own comment for why the two are split.
+  const importDeals=async(drafts)=>{
+    const results=await Promise.all(drafts.map(insertDeal));
+    const okCount=results.filter(r=>r.ok).length;
+    const failCount=results.length-okCount;
+    setShowCreator(false);
+    flash(failCount?`${okCount} deal${okCount===1?"":"s"} imported, ${failCount} failed`:`${okCount} deal${okCount===1?"":"s"} imported`);
     setRefreshKey(k=>k+1);
   };
 
@@ -1155,7 +1243,7 @@ select option{background:#fff}
       <div style={{fontSize:16,fontWeight:700,color:P.text}}>No deal rooms yet</div>
       <div style={{fontSize:13,color:P.textSec}}>Create your first one to get started.</div>
       <button onClick={()=>setShowCreator(true)} style={{padding:"10px 20px",background:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>+ New Deal Room</button>
-      {showCreator&&<DealCreator onSave={createDeal} onClose={()=>setShowCreator(false)}/>}
+      {showCreator&&<DealCreator onSave={createDeal} onImport={importDeals} onClose={()=>setShowCreator(false)}/>}
     </div>;
   }
 
@@ -1652,7 +1740,7 @@ select option{background:#fff}
       </div>
     </div>
 
-    {showCreator&&<DealCreator onSave={createDeal} onClose={()=>setShowCreator(false)}/>}
+    {showCreator&&<DealCreator onSave={createDeal} onImport={importDeals} onClose={()=>setShowCreator(false)}/>}
     {toast&&<div style={{position:"fixed",bottom:24,left:"50%",transform:"translateX(-50%)",background:P.text,borderRadius:8,padding:"10px 20px",fontSize:12,color:"#fff",fontWeight:600,boxShadow:"0 4px 20px rgba(0,0,0,0.15)",zIndex:999}}>{toast} ✓</div>}
   </div>;
 }
