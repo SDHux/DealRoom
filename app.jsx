@@ -352,33 +352,57 @@ const IMPORT_HEADER_ALIASES = {
   company:["company","company name"], contact:["contact","primary contact","contact name"],
   title:["title","deal title"], value:["value","deal value"], closeDate:["close date","closedate"],
   industry:["industry"], accessCode:["access code","accesscode"], welcomeMsg:["welcome message","welcome msg"],
+  problem:["problem","the problem"], challenges:["challenges"], solutions:["solutions"],
+};
+// Stakeholders live on a separate sheet (a list-per-deal doesn't fit flat columns on the
+// Deals sheet without an unwieldy "Stakeholder 1 Name/Stakeholder 2 Name..." scheme) --
+// linked back to its deal by Company, matched case-insensitively within the same import.
+const IMPORT_STAKEHOLDER_ALIASES = {
+  company:["company","deal company"], name:["name"], role:["role","title"], designation:["designation"],
+  bu:["business unit","bu"], email:["email"], linkedin:["linkedin","linkedin url"], approvalRequired:["approval required"],
 };
 const pickField=(normalizedRow,aliases)=>{for(const a of aliases){if(normalizedRow[a]!==undefined&&normalizedRow[a]!=="")return normalizedRow[a];}return "";};
-const IMPORT_TEMPLATE_HEADERS=["Company","Contact","Title","Value","Close Date","Industry","Access Code","Welcome Message"];
+// Semicolon-separated -- the simple, standard way to cram a list into one spreadsheet
+// cell, matching this feature's fixed-headers-over-a-mapping-UI level of simplicity.
+const splitListCell=v=>String(v||"").split(";").map(s=>s.trim()).filter(Boolean);
+const IMPORT_TEMPLATE_DEAL_HEADERS=["Company","Contact","Title","Value","Close Date","Industry","Access Code","Welcome Message","Problem","Challenges","Solutions"];
+const IMPORT_TEMPLATE_STAKEHOLDER_HEADERS=["Company","Name","Role","Designation","Business Unit","Email","LinkedIn","Approval Required"];
 
 const DealCreator = ({onSave,onImport,onClose}) => {
   const [step,setStep]=useState(1);const [mode,setMode]=useState(null);const [tx,setTx]=useState("");const [loading,setLoading]=useState(false);
   const [importRows,setImportRows]=useState([]);const [importErrors,setImportErrors]=useState([]);const [importFileName,setImportFileName]=useState("");
+  const [importHasStakeholderSheet,setImportHasStakeholderSheet]=useState(false);
   const [genError,setGenError]=useState("");
   const blank={company:"",contact:"",title:"",value:"",closeDate:"",industry:"",logo:"",color:"#1A4FBA",accessCode:"",includeTrialSessions:true,welcomeMsg:"",execSummary:{problem:"",challenges:[],solutions:[]},discovery:{summary:"",corporateStrategy:[],topOutcomes:[],challenges:[],jobsToBeDone:[],primaryUseCase:"",goals:{"90 Days":[],"1 Year":[],"Beyond":[]}},stakeholders:[],mapItems:[],content:[],activityLog:[]};
   const [draft,setDraft]=useState(blank);
   const downloadTemplate=()=>{
-    const csv=IMPORT_TEMPLATE_HEADERS.join(",")+"\n";
-    const blob=new Blob([csv],{type:"text/csv"});
-    const a=document.createElement("a");
-    a.href=URL.createObjectURL(blob);a.download="deal-import-template.csv";a.click();
-    URL.revokeObjectURL(a.href);
+    const wb=XLSX.utils.book_new();
+    const dealsSheet=XLSX.utils.aoa_to_sheet([
+      IMPORT_TEMPLATE_DEAL_HEADERS,
+      ["Acme Co.","Jane Doe","Renewal","50000","2026-12-31","Tech","","Great to be working with you.","Manual reporting takes hours each week","Slow onboarding; No mobile support; Manual reporting","Automated dashboards; Native mobile app; SSO"],
+    ]);
+    const stakeholdersSheet=XLSX.utils.aoa_to_sheet([
+      IMPORT_TEMPLATE_STAKEHOLDER_HEADERS,
+      ["Acme Co.","Jane Doe","VP Operations","decision-maker","Operations","jane@acme.com","https://linkedin.com/in/janedoe","yes"],
+    ]);
+    XLSX.utils.book_append_sheet(wb,dealsSheet,"Deals");
+    XLSX.utils.book_append_sheet(wb,stakeholdersSheet,"Stakeholders");
+    XLSX.writeFile(wb,"deal-import-template.xlsx");
   };
   const handleImportFile=async file=>{
     setImportFileName(file.name);
     const buf=await file.arrayBuffer();
     const wb=XLSX.read(buf,{type:"array"});
-    const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:""});
+    const sheetName=name=>wb.SheetNames.find(n=>n.trim().toLowerCase()===name);
+    const dealsSheetName=sheetName("deals")||wb.SheetNames[0];
+    const stakeholdersSheetName=sheetName("stakeholders");
+
+    const rows=XLSX.utils.sheet_to_json(wb.Sheets[dealsSheetName],{defval:""});
     const drafts=[];const errors=[];
     rows.forEach((row,i)=>{
       const norm=Object.fromEntries(Object.entries(row).map(([k,v])=>[String(k).trim().toLowerCase(),v]));
       const company=String(pickField(norm,IMPORT_HEADER_ALIASES.company)).trim();
-      if(!company){errors.push(`Row ${i+2}: missing Company, skipped`);return;}
+      if(!company){errors.push(`Deals row ${i+2}: missing Company, skipped`);return;}
       drafts.push({
         ...blank,
         company,
@@ -390,9 +414,42 @@ const DealCreator = ({onSave,onImport,onClose}) => {
         accessCode:String(pickField(norm,IMPORT_HEADER_ALIASES.accessCode)).trim(),
         welcomeMsg:String(pickField(norm,IMPORT_HEADER_ALIASES.welcomeMsg)).trim(),
         logo:company.slice(0,2).toUpperCase(),
+        execSummary:{
+          problem:String(pickField(norm,IMPORT_HEADER_ALIASES.problem)).trim(),
+          challenges:splitListCell(pickField(norm,IMPORT_HEADER_ALIASES.challenges)),
+          solutions:splitListCell(pickField(norm,IMPORT_HEADER_ALIASES.solutions)),
+        },
+        stakeholders:[],
       });
     });
+
+    if(stakeholdersSheetName){
+      const stakeholderRows=XLSX.utils.sheet_to_json(wb.Sheets[stakeholdersSheetName],{defval:""});
+      stakeholderRows.forEach((row,i)=>{
+        const norm=Object.fromEntries(Object.entries(row).map(([k,v])=>[String(k).trim().toLowerCase(),v]));
+        const company=String(pickField(norm,IMPORT_STAKEHOLDER_ALIASES.company)).trim();
+        const name=String(pickField(norm,IMPORT_STAKEHOLDER_ALIASES.name)).trim();
+        if(!name){errors.push(`Stakeholders row ${i+2}: missing Name, skipped`);return;}
+        const deal=drafts.find(d=>d.company.toLowerCase()===company.toLowerCase());
+        if(!deal){errors.push(`Stakeholders row ${i+2}: "${company}" doesn't match any deal's Company, skipped`);return;}
+        const designationRaw=String(pickField(norm,IMPORT_STAKEHOLDER_ALIASES.designation)).trim().toLowerCase();
+        const designation=DESIG_CFG[designationRaw]?designationRaw:"influencer";
+        const approvalText=String(pickField(norm,IMPORT_STAKEHOLDER_ALIASES.approvalRequired)).trim().toLowerCase();
+        deal.stakeholders.push({
+          name,
+          role:String(pickField(norm,IMPORT_STAKEHOLDER_ALIASES.role)).trim(),
+          designation,
+          bu:String(pickField(norm,IMPORT_STAKEHOLDER_ALIASES.bu)).trim(),
+          email:String(pickField(norm,IMPORT_STAKEHOLDER_ALIASES.email)).trim(),
+          linkedin:String(pickField(norm,IMPORT_STAKEHOLDER_ALIASES.linkedin)).trim(),
+          approvalRequired:["yes","true","1"].includes(approvalText),
+          engagement:50,
+        });
+      });
+    }
+
     setImportRows(drafts);setImportErrors(errors);
+    setImportHasStakeholderSheet(!!stakeholdersSheetName);
   };
   // Previously: any failure here (network/API error, or a response that wasn't clean
   // JSON) silently landed on step 3 with a still-blank draft -- no error, no clue why.
@@ -456,7 +513,7 @@ const DealCreator = ({onSave,onImport,onClose}) => {
           </div>
         </div>}
         {step===4&&<div>
-          <div style={{fontSize:13,color:P.textSec,marginBottom:16,lineHeight:1.6}}>Upload a spreadsheet where each row is one deal. Not sure of the format? Download the template below, fill it in, and upload it back.</div>
+          <div style={{fontSize:13,color:P.textSec,marginBottom:16,lineHeight:1.6}}>Upload a spreadsheet where each row is one deal. Download the template for the expected format -- it's a 2-sheet workbook (Deals + Stakeholders) so you can bring in your pipeline and its stakeholders together, fill it in, and upload it back.</div>
           <button onClick={downloadTemplate} style={{display:"flex",alignItems:"center",gap:6,padding:"9px 16px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:7,color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer",marginBottom:16}}>↓ Download Template</button>
           <label style={{display:"block",padding:"20px",border:`1.5px dashed ${P.border}`,borderRadius:10,textAlign:"center",cursor:"pointer",marginBottom:16,color:P.textSec,fontSize:13}}>
             {importFileName||"Click to choose a .csv or .xlsx file"}
@@ -464,9 +521,10 @@ const DealCreator = ({onSave,onImport,onClose}) => {
           </label>
           {importFileName&&<>
             {importRows.length>0&&<div style={{background:P.greenBg,border:`1px solid ${P.greenBorder}`,borderRadius:8,padding:"12px 16px",marginBottom:12}}>
-              <div style={{fontSize:13,fontWeight:700,color:P.green,marginBottom:6}}>{importRows.length} deal{importRows.length===1?"":"s"} will be created</div>
+              <div style={{fontSize:13,fontWeight:700,color:P.green,marginBottom:6}}>{importRows.length} deal{importRows.length===1?"":"s"} will be created{importRows.some(r=>r.stakeholders.length)?`, ${importRows.reduce((a,r)=>a+r.stakeholders.length,0)} stakeholders across these deals`:""}</div>
               <div style={{fontSize:12,color:P.textSec,lineHeight:1.6}}>{importRows.slice(0,5).map(r=>r.company).join(", ")}{importRows.length>5?`, +${importRows.length-5} more`:""}</div>
             </div>}
+            {!importHasStakeholderSheet&&<div style={{fontSize:11,color:P.textMute,marginBottom:12}}>No "Stakeholders" sheet found -- stakeholders require the .xlsx template (a plain .csv can only hold one flat table).</div>}
             {importErrors.length>0&&<div style={{background:P.amberBg,border:`1px solid ${P.amberBorder}`,borderRadius:8,padding:"12px 16px",marginBottom:16}}>
               <div style={{fontSize:13,fontWeight:700,color:P.amber,marginBottom:6}}>{importErrors.length} row{importErrors.length===1?"":"s"} skipped</div>
               {importErrors.map((e,i)=><div key={i} style={{fontSize:12,color:P.textSec,marginBottom:2}}>{e}</div>)}
