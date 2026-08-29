@@ -175,6 +175,10 @@ const LOGO_MARK = (
 const AE = { name:"Mark Huckins", title:"Sr. Account Executive", company:"Salsify", email:"mark.huckins@gmail.com", phone:"+1-858-752-4321", linkedin:"https://linkedin.com/in/markhuckins", initials:"MH",
   photo:"https://media.licdn.com/dms/image/v2/D5603AQGEzOXSHDFOqA/profile-displayphoto-shrink_200_200/profile-displayphoto-shrink_200_200/0/1699997107933?e=2147483647&v=beta&t=IymYW4hFsxj3t0BKhS4a9B-HxCFjzjBm1V9_QNUcbAs" };
 
+// Fixed order, not derived from Object.keys/entries -- a JSONB blob's key order depends on
+// however it was written (a different AI-extraction or import run could produce these in
+// a different order), so it's not reliably chronological unless enforced here.
+const GOAL_PERIODS = ["90 Days","1 Year","Beyond"];
 const PHASES_ALL = ["Value Alignment","Product Demo","Trial Sessions","Business Case","Paper Process"];
 const PHASES_NO_TRIAL = ["Value Alignment","Product Demo","Business Case","Paper Process"];
 // Phase headers are plain uppercase mono labels in the brand system (no color-coded pill
@@ -877,9 +881,13 @@ function DealRoom({prospectShareSlug}) {
   const [chatInput,setChatInput]=useState("");
   const [showCreator,setShowCreator]=useState(false);
   const [showShare,setShowShare]=useState(false);
-  const [showAddTask,setShowAddTask]=useState(false);
-  const [editingSummary,setEditingSummary]=useState(false);
-  const [summaryDraft,setSummaryDraft]=useState(null);
+  const [showAddTask,setShowAddTask]=useState(null); // null, or the phase currently showing its Add Task form
+  // Which single Executive Summary section (if any) is being edited -- "problem" |
+  // "challenges" | "solutions" | null -- so editing one section never puts the others
+  // into edit mode too. summarySectionDraft holds that one section's in-progress value
+  // (a string for problem, an array for challenges/solutions).
+  const [editingSummarySection,setEditingSummarySection]=useState(null);
+  const [summarySectionDraft,setSummarySectionDraft]=useState(null);
   const [editingDiscovery,setEditingDiscovery]=useState(false);
   const [discoveryDraft,setDiscoveryDraft]=useState(null);
   const [showStakeholderModal,setShowStakeholderModal]=useState(false);
@@ -1196,7 +1204,7 @@ function DealRoom({prospectShareSlug}) {
     const mapped={id:data.id,phase:data.phase,task:data.task,owner:data.owner_name,buyerOwner:data.buyer_owner_label,dueDate:data.due_date,status:data.status,notes:data.notes,approvalRequired:data.approval_required};
     setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,mapItems:[...d.mapItems,mapped]}));
     setNewTask({phase:"Value Alignment",task:"",owner:"Mark H.",buyerOwner:"",dueDate:"",status:"pending",notes:"",approvalRequired:false});
-    setShowAddTask(false);
+    setShowAddTask(null);
     flash("Task added");
   };
 
@@ -1305,7 +1313,7 @@ function DealRoom({prospectShareSlug}) {
     logDocumentView(f);
   };
 
-  const repTabs=[["map","Action Plan"],["summary","Executive Summary"],["discovery","Discovery"],["content","Content"],["stakeholders","Stakeholders"],["analytics","Analytics"]];
+  const repTabs=[["map","Action Plan"],["summary","Executive Summary"],["discovery","Discovery"],["stakeholders","Stakeholders"],["content","Content"],["meddpic","MEDDPIC"],["analytics","Analytics"]];
   const prosTabs=[["welcome","Welcome"],["summary","Executive Summary"],["map","Action Plan"],["discovery","Discovery"],["content","Resources"],["stakeholders","Team"]];
   const tabs=viewMode==="prospect"?prosTabs:repTabs;
 
@@ -1534,27 +1542,31 @@ select option{background:#fff}
           {tab==="summary"&&<div style={{maxWidth:820}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
               <div className="headline" style={{fontSize:22,color:P.text}}>Executive Summary</div>
-              {viewMode==="rep"&&<div style={{display:"flex",gap:8}}>
-                {editingSummary?<>
-                  <button onClick={()=>{updateExecSummary(summaryDraft);setEditingSummary(false);}} style={{padding:"8px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Save</button>
-                  <button onClick={()=>setEditingSummary(false)} style={{padding:"8px 16px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer"}}>Cancel</button>
-                </>:<>
-                  <button onClick={()=>{setSummaryDraft({problem:deal.execSummary?.problem||"",challenges:deal.execSummary?.challenges||[],solutions:deal.execSummary?.solutions||[]});setEditingSummary(true);}} style={{padding:"8px 16px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer"}}>Edit</button>
-                  <button onClick={()=>runAI("bizcase")} style={{padding:"8px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>✦ AI Refresh</button>
-                </>}
-              </div>}
+              {viewMode==="rep"&&<button onClick={()=>runAI("bizcase")} style={{padding:"8px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>✦ AI Refresh</button>}
             </div>
-            <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:12,padding:"28px 32px"}}>
-              {editingSummary?<>
-                <div style={{marginBottom:24}}><div style={{fontSize:16,fontWeight:800,color:P.text,marginBottom:10}}>The Problem</div><textarea value={summaryDraft.problem} onChange={e=>setSummaryDraft(d=>({...d,problem:e.target.value}))} style={{width:"100%",height:120,border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",lineHeight:1.6,resize:"vertical",outline:"none"}}/></div>
-                <div style={{marginBottom:24}}><div style={{fontSize:16,fontWeight:800,color:P.text,marginBottom:10}}>Key Challenges</div><EditableList items={summaryDraft.challenges} onChange={v=>setSummaryDraft(d=>({...d,challenges:v}))}/></div>
-                <div><div style={{fontSize:16,fontWeight:800,color:P.text,marginBottom:10}}>Solutions</div><EditableList items={summaryDraft.solutions} onChange={v=>setSummaryDraft(d=>({...d,solutions:v}))}/></div>
-              </>:<>
-                <div style={{marginBottom:24}}><div style={{fontSize:16,fontWeight:800,color:P.text,marginBottom:10}}>The Problem</div>{(deal.execSummary?.problem||"").split("\n\n").map((para,i)=><p key={i} style={{fontSize:13,color:P.textSec,lineHeight:1.75,marginBottom:8}}>{para}</p>)}</div>
-                <div style={{marginBottom:24}}><div style={{fontSize:16,fontWeight:800,color:P.text,marginBottom:10}}>Key Challenges</div><ol style={{paddingLeft:20}}>{(deal.execSummary?.challenges||[]).map((c,i)=><li key={i} style={{fontSize:13,color:P.textSec,lineHeight:1.75,marginBottom:6}}>{c}</li>)}</ol></div>
-                <div><div style={{fontSize:16,fontWeight:800,color:P.text,marginBottom:10}}>Solutions</div><ol style={{paddingLeft:20}}>{(deal.execSummary?.solutions||[]).map((s,i)=><li key={i} style={{fontSize:13,color:P.textSec,lineHeight:1.75,marginBottom:6}}>{s}</li>)}</ol></div>
-              </>}
-            </div>
+            {[
+              {key:"problem",title:"The Problem",type:"text"},
+              {key:"challenges",title:"Key Challenges",type:"list"},
+              {key:"solutions",title:"Solutions",type:"list"},
+            ].map(({key,title,type})=>{
+              const editing=editingSummarySection===key;
+              const value=deal.execSummary?.[key];
+              return (<div key={key} style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:12,padding:"22px 26px",marginBottom:16,boxShadow:"0 1px 2px rgba(27,31,35,0.05), 0 12px 32px -12px rgba(27,31,35,0.16)"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                  <div style={{fontSize:16,fontWeight:800,color:P.text}}>{title}</div>
+                  {viewMode==="rep"&&(editing?<div style={{display:"flex",gap:8}}>
+                    <button onClick={()=>{updateExecSummary({...deal.execSummary,[key]:summarySectionDraft});setEditingSummarySection(null);}} style={{padding:"6px 14px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Save</button>
+                    <button onClick={()=>setEditingSummarySection(null)} style={{padding:"6px 14px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:11,fontWeight:600,cursor:"pointer"}}>Cancel</button>
+                  </div>:<button onClick={()=>{setSummarySectionDraft(type==="list"?(value||[]):(value||""));setEditingSummarySection(key);}} style={{padding:"6px 14px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:11,fontWeight:600,cursor:"pointer"}}>Edit</button>)}
+                </div>
+                {editing?(type==="list"?
+                  <EditableList items={summarySectionDraft} onChange={setSummarySectionDraft}/>
+                :<textarea value={summarySectionDraft} onChange={e=>setSummarySectionDraft(e.target.value)} style={{width:"100%",height:120,border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",lineHeight:1.6,resize:"vertical",outline:"none"}}/>)
+                :(type==="list"?
+                  <ol style={{paddingLeft:20}}>{(value||[]).map((item,i)=><li key={i} style={{fontSize:13,color:P.textSec,lineHeight:1.75,marginBottom:6}}>{item}</li>)}</ol>
+                :(value||"").split("\n\n").map((para,i)=><p key={i} style={{fontSize:13,color:P.textSec,lineHeight:1.75,marginBottom:8}}>{para}</p>))}
+              </div>);
+            })}
           </div>}
 
           {/* ACTION PLAN */}
@@ -1568,9 +1580,10 @@ select option{background:#fff}
                   <span style={{fontSize:12.5,color:P.textMute}}>{items.filter(t=>t.status==="complete").length} of {items.length} complete</span>
                 </div>
                 <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:12,overflow:"hidden",boxShadow:"0 1px 2px rgba(27,31,35,0.05), 0 12px 32px -12px rgba(27,31,35,0.16)"}}>
-                  <div style={{display:"grid",gridTemplateColumns:`1fr 100px 150px 100px 110px${viewMode==="rep"?" 26px":""}`,padding:"7px 16px",background:P.bg,borderBottom:`1px solid ${P.border}`}}>
+                  {items.length>0&&<div style={{display:"grid",gridTemplateColumns:`1fr 100px 150px 100px 110px${viewMode==="rep"?" 26px":""}`,padding:"7px 16px",background:P.bg,borderBottom:`1px solid ${P.border}`}}>
                     {["Task","Seller","Buyer Owner","Due Date","Status"].concat(viewMode==="rep"?[""]:[]).map(h=><div key={h} style={{fontSize:10,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.07em"}}>{h}</div>)}
-                  </div>
+                  </div>}
+                  {items.length===0&&<div style={{padding:"16px",fontSize:12.5,color:P.textMute,fontStyle:"italic"}}>No tasks yet in this phase</div>}
                   {items.map((task,i)=>{const sc=STATUS_CFG[task.status];return(
                     <div key={task.id} className="hr" style={{display:"grid",gridTemplateColumns:`1fr 100px 150px 100px 110px${viewMode==="rep"?" 26px":""}`,padding:"11px 16px",borderBottom:i<items.length-1?`1px solid ${P.bg}`:"none",alignItems:"center"}}>
                       <div style={{display:"flex",alignItems:"flex-start",gap:10}}>
@@ -1588,25 +1601,23 @@ select option{background:#fff}
                       :<div style={{padding:"3px 8px",borderRadius:4,background:sc.bg,border:`1px solid ${sc.border}`,color:sc.text,fontSize:11,fontWeight:700,textAlign:"center"}}>{sc.label}</div>}
                       {viewMode==="rep"&&<button onClick={()=>deleteTask(task.id)} style={{background:"none",border:"none",color:P.textMute,cursor:"pointer",fontSize:14}}>×</button>}
                     </div>);})}
+                  {viewMode==="rep"&&(showAddTask===phase?<div style={{padding:16,borderTop:items.length>0?`1px solid ${P.bg}`:"none"}}>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
+                      <input placeholder="Task name" value={newTask.task} onChange={e=>setNewTask({...newTask,task:e.target.value})} style={inpS}/>
+                      <input placeholder="Buyer owner" value={newTask.buyerOwner} onChange={e=>setNewTask({...newTask,buyerOwner:e.target.value})} style={inpS}/>
+                      <input type="date" value={newTask.dueDate} onChange={e=>setNewTask({...newTask,dueDate:e.target.value})} style={inpS}/>
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+                      <input placeholder="Notes" value={newTask.notes} onChange={e=>setNewTask({...newTask,notes:e.target.value})} style={inpS}/>
+                      <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:P.textSec,cursor:"pointer"}}><input type="checkbox" checked={newTask.approvalRequired} onChange={e=>setNewTask({...newTask,approvalRequired:e.target.checked})}/>Approval Required</label>
+                    </div>
+                    <div style={{display:"flex",gap:8}}>
+                      <button onClick={()=>{if(!newTask.task.trim())return;addTask(newTask);setShowAddTask(null);}} style={{padding:"8px 18px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Add Task</button>
+                      <button onClick={()=>setShowAddTask(null)} style={{padding:"8px 14px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,cursor:"pointer"}}>Cancel</button>
+                    </div>
+                  </div>:<button onClick={()=>{setNewTask(t=>({...t,phase}));setShowAddTask(phase);}} style={{width:"100%",padding:10,background:"none",border:"none",borderTop:items.length>0?`1px solid ${P.bg}`:"none",color:P.textMute,fontSize:12,cursor:"pointer"}} onMouseOver={e=>e.currentTarget.style.color=P.accent} onMouseOut={e=>e.currentTarget.style.color=P.textMute}>+ Add Task</button>)}
                 </div>
               </div>;})}
-            {viewMode==="rep"&&(showAddTask?<div style={{background:P.surface,border:`1px solid ${P.accentMid}50`,borderRadius:10,padding:16,marginBottom:16}}>
-              <div style={{fontSize:12,fontWeight:800,color:P.accent,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:12}}>New Task</div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
-                <input placeholder="Task name" value={newTask.task} onChange={e=>setNewTask({...newTask,task:e.target.value})} style={inpS}/>
-                <input placeholder="Buyer owner" value={newTask.buyerOwner} onChange={e=>setNewTask({...newTask,buyerOwner:e.target.value})} style={inpS}/>
-                <input type="date" value={newTask.dueDate} onChange={e=>setNewTask({...newTask,dueDate:e.target.value})} style={inpS}/>
-              </div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
-                <select value={newTask.phase} onChange={e=>setNewTask({...newTask,phase:e.target.value})} style={inpS}>{phases.map(ph=><option key={ph}>{ph}</option>)}</select>
-                <input placeholder="Notes" value={newTask.notes} onChange={e=>setNewTask({...newTask,notes:e.target.value})} style={inpS}/>
-                <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:P.textSec,cursor:"pointer"}}><input type="checkbox" checked={newTask.approvalRequired} onChange={e=>setNewTask({...newTask,approvalRequired:e.target.checked})}/>Approval Required</label>
-              </div>
-              <div style={{display:"flex",gap:8}}>
-                <button onClick={()=>{if(!newTask.task.trim())return;addTask(newTask);}} style={{padding:"8px 18px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Add Task</button>
-                <button onClick={()=>setShowAddTask(false)} style={{padding:"8px 14px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,cursor:"pointer"}}>Cancel</button>
-              </div>
-            </div>:<button onClick={()=>setShowAddTask(true)} style={{width:"100%",padding:10,background:"none",border:`1.5px dashed ${P.border}`,borderRadius:8,color:P.textMute,fontSize:12,cursor:"pointer"}} onMouseOver={e=>{e.currentTarget.style.borderColor=P.accent;e.currentTarget.style.color=P.accent;}} onMouseOut={e=>{e.currentTarget.style.borderColor=P.border;e.currentTarget.style.color=P.textMute;}}>+ Add Task</button>)}
           </div>}
 
           {/* DISCOVERY */}
@@ -1641,7 +1652,7 @@ select option{background:#fff}
               <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:10,padding:"16px 18px"}}>
                 <div style={{fontSize:13,fontWeight:700,color:P.text,marginBottom:12}}>Priority Goals & Objectives</div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:16}}>
-                  {Object.keys(discoveryDraft.goals).map(period=>(
+                  {GOAL_PERIODS.map(period=>(
                     <div key={period}>
                       <div style={{fontSize:10,fontWeight:800,color:P.accent,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10}}>{period}</div>
                       <EditableList items={discoveryDraft.goals[period]} onChange={v=>setDiscoveryDraft(d=>({...d,goals:{...d.goals,[period]:v}}))}/>
@@ -1677,11 +1688,11 @@ select option{background:#fff}
               <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:10,overflow:"hidden"}}>
                 <div style={{padding:"13px 18px",borderBottom:`1px solid ${P.border}`,fontSize:13,fontWeight:700,color:P.text}}>Priority Goals & Objectives</div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr"}}>
-                  {Object.entries(deal.discovery.goals).map(([period,goals],i,arr)=>(
+                  {GOAL_PERIODS.map((period,i,arr)=>{const goals=deal.discovery.goals?.[period]||[];return(
                     <div key={period} style={{padding:"16px 18px",borderRight:i<arr.length-1?`1px solid ${P.border}`:"none"}}>
                       <div style={{fontSize:10,fontWeight:800,color:[P.accent,P.green,P.purple][i],textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10}}>{period}</div>
                       {goals.map((g,j)=><div key={j} style={{display:"flex",gap:8,marginBottom:7}}><div style={{width:5,height:5,borderRadius:"50%",background:[P.accentMid,P.green,P.purple][i],marginTop:6,flexShrink:0}}/><span style={{fontSize:12,color:P.textSec,lineHeight:1.5}}>{g}</span></div>)}
-                    </div>))}
+                    </div>);})}
                 </div>
               </div>
             </>}
@@ -1762,6 +1773,59 @@ select option{background:#fff}
               onClose={()=>{setShowStakeholderModal(false);setEditingStakeholder(null);}}
               onSave={draft=>editingStakeholder?updateStakeholder(editingStakeholder.id,draft):addStakeholder(draft)}
             />}
+          </div>}
+
+          {/* MEDDPIC -- fully derived, read-only, no separate edit surface or storage: if
+              something here is wrong, fix it at the source (Discovery, Stakeholders, or
+              Action Plan) and this tab reflects it automatically. Decision Criteria and
+              Decision Process are deliberately left as "not enough data yet" -- there's no
+              honest, obvious source for either yet, so guessing would be worse than
+              admitting the gap. Rep-only, like Analytics -- a buyer should never see their
+              own economic-buyer/champion/pain analysis laid out via sales methodology. */}
+          {tab==="meddpic"&&viewMode==="rep"&&<div style={{maxWidth:820}}>
+            <div className="headline" style={{fontSize:22,color:P.text,marginBottom:6}}>MEDDPIC</div>
+            <div style={{fontSize:13,color:P.textMute,marginBottom:20,lineHeight:1.6}}>Auto-derived from Discovery, Stakeholders, and Action Plan -- edit those tabs to update what shows here.</div>
+            {(()=>{
+              const champions=deal.stakeholders.filter(s=>s.designation==="champion");
+              const decisionMakers=deal.stakeholders.filter(s=>s.designation==="decision-maker");
+              const paperProcessTasks=deal.mapItems.filter(t=>t.phase==="Paper Process");
+              const cardStyle={background:P.surface,border:`1px solid ${P.border}`,borderRadius:12,padding:"20px 24px",marginBottom:14,boxShadow:"0 1px 2px rgba(27,31,35,0.05), 0 12px 32px -12px rgba(27,31,35,0.16)"};
+              const letterStyle={width:32,height:32,borderRadius:8,background:P.accentLight,color:P.accentMid,fontSize:16,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0};
+              const empty=<div style={{fontSize:13,color:P.textMute,fontStyle:"italic"}}>Not enough data yet</div>;
+              const Section=({letter,title,children})=>(
+                <div style={cardStyle}>
+                  <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12}}>
+                    <div className="headline" style={letterStyle}>{letter}</div>
+                    <div style={{fontSize:15,fontWeight:700,color:P.text}}>{title}</div>
+                  </div>
+                  {children}
+                </div>
+              );
+              const StakeholderList=list=>list.length?<div style={{display:"flex",flexDirection:"column",gap:6}}>{list.map(s=><div key={s.id} style={{fontSize:13,color:P.textSec}}><strong style={{color:P.text}}>{s.name}</strong>{s.role?` — ${s.role}`:""}</div>)}</div>:<div style={{fontSize:13,color:P.textMute,fontStyle:"italic"}}>Not yet identified</div>;
+              return (<>
+                <Section letter="M" title="Metrics">
+                  {(deal.discovery.topOutcomes||[]).length>0&&<ol style={{paddingLeft:20,marginBottom:10}}>{deal.discovery.topOutcomes.map((o,i)=><li key={i} style={{fontSize:13,color:P.textSec,lineHeight:1.6,marginBottom:4}}>{o}</li>)}</ol>}
+                  {GOAL_PERIODS.some(p=>(deal.discovery.goals?.[p]||[]).length)?
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+                      {GOAL_PERIODS.map(period=>(<div key={period}>
+                        <div className="mono" style={{fontSize:10,fontWeight:600,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:6}}>{period}</div>
+                        {(deal.discovery.goals?.[period]||[]).map((g,i)=><div key={i} style={{fontSize:12,color:P.textSec,marginBottom:3}}>· {g}</div>)}
+                      </div>))}
+                    </div>
+                  :!(deal.discovery.topOutcomes||[]).length&&empty}
+                </Section>
+                <Section letter="E" title="Economic Buyer">{StakeholderList(decisionMakers)}</Section>
+                <Section letter="D" title="Decision Criteria">{empty}</Section>
+                <Section letter="D" title="Decision Process">{empty}</Section>
+                <Section letter="P" title="Paper Process">
+                  {paperProcessTasks.length?<div style={{display:"flex",flexDirection:"column",gap:6}}>{paperProcessTasks.map(t=><div key={t.id} style={{fontSize:13,color:P.textSec,display:"flex",alignItems:"center",gap:8}}><span style={{width:6,height:6,borderRadius:"50%",background:t.status==="complete"?P.green:P.border,flexShrink:0}}/>{t.task}</div>)}</div>:empty}
+                </Section>
+                <Section letter="I" title="Identify Pain">
+                  {(deal.discovery.challenges||[]).length?<ol style={{paddingLeft:20}}>{deal.discovery.challenges.map((c,i)=><li key={i} style={{fontSize:13,color:P.textSec,lineHeight:1.6,marginBottom:4}}>{c}</li>)}</ol>:empty}
+                </Section>
+                <Section letter="C" title="Champion">{StakeholderList(champions)}</Section>
+              </>);
+            })()}
           </div>}
 
           {/* ANALYTICS */}
