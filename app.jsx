@@ -359,6 +359,7 @@ const IMPORT_TEMPLATE_HEADERS=["Company","Contact","Title","Value","Close Date",
 const DealCreator = ({onSave,onImport,onClose}) => {
   const [step,setStep]=useState(1);const [mode,setMode]=useState(null);const [tx,setTx]=useState("");const [loading,setLoading]=useState(false);
   const [importRows,setImportRows]=useState([]);const [importErrors,setImportErrors]=useState([]);const [importFileName,setImportFileName]=useState("");
+  const [genError,setGenError]=useState("");
   const blank={company:"",contact:"",title:"",value:"",closeDate:"",industry:"",logo:"",color:"#1A4FBA",accessCode:"",includeTrialSessions:true,welcomeMsg:"",execSummary:{problem:"",challenges:[],solutions:[]},discovery:{summary:"",corporateStrategy:[],topOutcomes:[],challenges:[],jobsToBeDone:[],primaryUseCase:"",goals:{"90 Days":[],"1 Year":[],"Beyond":[]}},stakeholders:[],mapItems:[],content:[],activityLog:[]};
   const [draft,setDraft]=useState(blank);
   const downloadTemplate=()=>{
@@ -393,8 +394,28 @@ const DealCreator = ({onSave,onImport,onClose}) => {
     });
     setImportRows(drafts);setImportErrors(errors);
   };
-  const gen=async()=>{setLoading(true);const res=await callClaude("You are an enterprise sales AI. Return ONLY valid JSON no markdown.",`Extract: company,contact,title,value,industry,accessCode(6-char uppercase),welcomeMsg(2 sentences),execSummary.problem(2 paragraphs),execSummary.challenges(array 4),execSummary.solutions(array 4),discovery.summary(2 sentences),discovery.corporateStrategy(array 3),discovery.topOutcomes(array 3),discovery.challenges(array 4),discovery.jobsToBeDone(array 3),discovery.primaryUseCase,discovery.goals({"90 Days":[],"1 Year":[],"Beyond":[]}),stakeholders(array:name,role,designation,bu,linkedin).\n\n${tx}`,2000);
-    try{const p=JSON.parse(res.replace(/```json|```/g,"").trim());const init=n=>n.split(" ").map(x=>x[0]).join("").toUpperCase().slice(0,2);setDraft(v=>({...v,...p,logo:(p.company||"").slice(0,2).toUpperCase(),execSummary:p.execSummary||v.execSummary,discovery:{...v.discovery,...(p.discovery||{})},stakeholders:(p.stakeholders||[]).map((s,i)=>({id:`s${i+1}`,...s,initials:init(s.name||""),engagement:50,lastSeen:"Just added",approvalRequired:s.designation==="decision-maker"||s.designation==="blocker",docsViewed:[],reportsTo:null})),mapItems:["Value Alignment","Business Case","Paper Process"].map((ph,pi)=>({id:pi*10+1,phase:ph,task:`${ph} Kickoff`,owner:"Mark H.",buyerOwner:p.contact||"",dueDate:"",status:"pending",notes:"",approvalRequired:false})),activityLog:[]}));setStep(3);}catch{setStep(3);}setLoading(false);};
+  // Previously: any failure here (network/API error, or a response that wasn't clean
+  // JSON) silently landed on step 3 with a still-blank draft -- no error, no clue why.
+  // Now: the whole call is one try/catch, extraction is robust to the model wrapping
+  // the JSON in explanatory prose (not just code fences), and a real failure surfaces
+  // the actual error/response text and keeps the user on step 2 to retry, instead of
+  // silently advancing to an empty form.
+  const gen=async()=>{
+    setLoading(true);setGenError("");
+    let res;
+    try{
+      res=await callClaude("You are an enterprise sales AI. Return ONLY valid JSON no markdown.",`Extract: company,contact,title,value,industry,accessCode(6-char uppercase),welcomeMsg(2 sentences),execSummary.problem(2 paragraphs),execSummary.challenges(array 4),execSummary.solutions(array 4),discovery.summary(2 sentences),discovery.corporateStrategy(array 3),discovery.topOutcomes(array 3),discovery.challenges(array 4),discovery.jobsToBeDone(array 3),discovery.primaryUseCase,discovery.goals({"90 Days":[],"1 Year":[],"Beyond":[]}),stakeholders(array:name,role,designation,bu,linkedin).\n\n${tx}`,2000);
+    }catch(e){setGenError(e.message||"AI request failed");setLoading(false);return;}
+    try{
+      const jsonMatch=res.match(/\{[\s\S]*\}/);
+      if(!jsonMatch)throw new Error(`AI didn't return JSON. Raw response: ${res.slice(0,300)||"(empty)"}`);
+      const p=JSON.parse(jsonMatch[0]);
+      const init=n=>n.split(" ").map(x=>x[0]).join("").toUpperCase().slice(0,2);
+      setDraft(v=>({...v,...p,logo:(p.company||"").slice(0,2).toUpperCase(),execSummary:p.execSummary||v.execSummary,discovery:{...v.discovery,...(p.discovery||{})},stakeholders:(p.stakeholders||[]).map((s,i)=>({id:`s${i+1}`,...s,initials:init(s.name||""),engagement:50,lastSeen:"Just added",approvalRequired:s.designation==="decision-maker"||s.designation==="blocker",docsViewed:[],reportsTo:null})),mapItems:["Value Alignment","Business Case","Paper Process"].map((ph,pi)=>({id:pi*10+1,phase:ph,task:`${ph} Kickoff`,owner:"Mark H.",buyerOwner:p.contact||"",dueDate:"",status:"pending",notes:"",approvalRequired:false})),activityLog:[]}));
+      setStep(3);
+    }catch(e){setGenError(e.message||"Couldn't parse the AI's response");}
+    setLoading(false);
+  };
   const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
   const lbl={fontSize:11,fontWeight:700,color:P.textSec,letterSpacing:"0.04em",textTransform:"uppercase",display:"block",marginBottom:5};
   return (<div style={{position:"fixed",inset:0,background:"rgba(17,24,39,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
@@ -414,6 +435,7 @@ const DealCreator = ({onSave,onImport,onClose}) => {
         </div>}
         {step===2&&<div><div style={{fontSize:13,color:P.textSec,marginBottom:18,lineHeight:1.6}}>Paste discovery notes, LinkedIn profiles, or any context. AI builds the full deal room.</div>
           <textarea value={tx} onChange={e=>setTx(e.target.value)} placeholder="Paste transcript or context here..." style={{...inp,height:220,resize:"vertical",lineHeight:1.6,marginBottom:16}}/>
+          {genError&&<div style={{background:P.redBg,border:`1px solid ${P.redBorder}`,borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:12,color:P.red,whiteSpace:"pre-wrap"}}>{genError}</div>}
           <div style={{display:"flex",gap:10}}>
             <button onClick={gen} disabled={loading||!tx.trim()} style={{flex:1,padding:"11px 20px",background:loading?P.border:P.accent,border:"none",borderRadius:7,color:"#fff",fontSize:13,fontWeight:700,cursor:loading?"not-allowed":"pointer"}}>{loading?"⟳ Generating…":"✦ Generate with AI"}</button>
             <button onClick={()=>setStep(1)} style={{padding:"11px 18px",background:"none",border:`1px solid ${P.border}`,borderRadius:7,color:P.textSec,fontSize:13,cursor:"pointer"}}>Back</button>
