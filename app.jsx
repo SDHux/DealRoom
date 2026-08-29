@@ -1088,7 +1088,7 @@ function DealRoom({prospectShareSlug}) {
         status:t.status||"pending",notes:t.notes||null,approval_required:!!t.approvalRequired,sort_order:i,
       })));
     }
-    return{ok:true,id:newDeal.id};
+    return{ok:true,action:"created",id:newDeal.id};
   };
 
   const createDeal=async(draft)=>{
@@ -1102,12 +1102,64 @@ function DealRoom({prospectShareSlug}) {
   // One row = one deal, per Mark's explicit scope call: bulk-onboarding an existing
   // pipeline, not bulk-adding stakeholders into a single deal. Sequential toast/refresh
   // (not per-row) -- see insertDeal's own comment for why the two are split.
+  // Re-uploading the same (or an updated) spreadsheet must not create duplicates. A row
+  // whose Company matches an existing deal (case-insensitive) updates that deal instead
+  // of inserting a new one -- and only fills fields currently blank, never overwrites
+  // something already there. `deal.value` is deliberately excluded: fmtCurrency turns
+  // even a genuinely-unset amount into "$0", never an empty string, so "is it blank"
+  // can't be told apart from "it's really $0" without a separate raw-value fetch --
+  // not worth it since deal value is normally set at creation anyway.
+  const mergeDealFromImport=async(existing,draft)=>{
+    const patch={};
+    if(!existing.contact&&draft.contact)patch.primary_contact_name=draft.contact;
+    if(!existing.title&&draft.title)patch.title=draft.title;
+    if(!existing.closeDate&&draft.closeDate)patch.close_date=draft.closeDate;
+    if(!existing.industry&&draft.industry)patch.industry=draft.industry;
+    if(!existing.welcomeMsg&&draft.welcomeMsg)patch.welcome_message=draft.welcomeMsg;
+    const es={...existing.execSummary};let esChanged=false;
+    if(!es.problem&&draft.execSummary.problem){es.problem=draft.execSummary.problem;esChanged=true;}
+    if(!(es.challenges||[]).length&&draft.execSummary.challenges.length){es.challenges=draft.execSummary.challenges;esChanged=true;}
+    if(!(es.solutions||[]).length&&draft.execSummary.solutions.length){es.solutions=draft.execSummary.solutions;esChanged=true;}
+    if(esChanged)patch.exec_summary=es;
+    if(Object.keys(patch).length){
+      const{error}=await sb.from("deals").update(patch).eq("id",existing.id);
+      if(error)return{ok:false};
+    }
+
+    for(const s of draft.stakeholders){
+      const match=existing.stakeholders.find(es2=>es2.name.toLowerCase()===s.name.toLowerCase());
+      if(!match){
+        await sb.from("stakeholders").insert({
+          deal_id:existing.id,created_by:session.user.id,name:s.name,role_title:s.role,
+          designation:s.designation,engagement_score:50,business_unit:s.bu||null,
+          email:s.email||null,linkedin_url:s.linkedin||null,approval_required:!!s.approvalRequired,
+        });
+        continue;
+      }
+      const sPatch={};
+      if(!match.role&&s.role)sPatch.role_title=s.role;
+      if(!match.bu&&s.bu)sPatch.business_unit=s.bu;
+      if(!match.email&&s.email)sPatch.email=s.email;
+      if(!match.linkedin&&s.linkedin)sPatch.linkedin_url=s.linkedin;
+      if(Object.keys(sPatch).length)await sb.from("stakeholders").update(sPatch).eq("id",match.id);
+    }
+    return{ok:true,action:"updated"};
+  };
+
   const importDeals=async(drafts)=>{
-    const results=await Promise.all(drafts.map(insertDeal));
-    const okCount=results.filter(r=>r.ok).length;
-    const failCount=results.length-okCount;
+    const results=await Promise.all(drafts.map(draft=>{
+      const existing=deals.find(d=>d.company.toLowerCase()===draft.company.toLowerCase());
+      return existing?mergeDealFromImport(existing,draft):insertDeal(draft);
+    }));
+    const createdCount=results.filter(r=>r.ok&&r.action==="created").length;
+    const updatedCount=results.filter(r=>r.ok&&r.action==="updated").length;
+    const failCount=results.filter(r=>!r.ok).length;
     setShowCreator(false);
-    flash(failCount?`${okCount} deal${okCount===1?"":"s"} imported, ${failCount} failed`:`${okCount} deal${okCount===1?"":"s"} imported`);
+    const parts=[];
+    if(createdCount)parts.push(`${createdCount} created`);
+    if(updatedCount)parts.push(`${updatedCount} updated`);
+    if(failCount)parts.push(`${failCount} failed`);
+    flash(parts.join(", "));
     setRefreshKey(k=>k+1);
   };
 
