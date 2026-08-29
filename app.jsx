@@ -353,10 +353,26 @@ const OrgNode = ({s,all,depth=0}) => {
 // level as the risk-signal thresholds, not over-engineered for a feature nobody's used
 // yet. Matches DealCreator's own manual-entry field set exactly.
 const IMPORT_HEADER_ALIASES = {
-  company:["company","company name"], contact:["contact","primary contact","contact name"],
-  title:["title","deal title"], value:["value","deal value"], closeDate:["close date","closedate"],
+  company:["company","company name"], contact:["contact","primary contact","contact name","primary contact name"],
+  // "Primary Contact Title" has nowhere honest to go but here -- a real file (a CRM
+  // export) used this column for the contact's job title, not a deal title, since it had
+  // no deal-title column at all. Flagging the ambiguity rather than silently guessing.
+  title:["title","deal title","primary contact title"],
+  value:["value","deal value"], closeDate:["close date","closedate"],
   industry:["industry"], accessCode:["access code","accesscode"], welcomeMsg:["welcome message","welcome msg"],
-  problem:["problem","the problem"], challenges:["challenges"], solutions:["solutions"],
+  problem:["problem","the problem","exec summary - problem"],
+  challenges:["challenges","exec summary - challenges"],
+  solutions:["solutions","exec summary - solutions"],
+  discoverySummary:["discovery - summary","discovery summary"],
+  corporateStrategy:["discovery - corporate strategy","corporate strategy"],
+  topOutcomes:["discovery - outcomes","discovery - top outcomes","outcomes","top outcomes"],
+  discoveryChallenges:["discovery - challenges"],
+  primaryUseCase:["discovery - primary use case","primary use case"],
+  goals90:["goals - 90 days","90 days"], goals1yr:["goals - 1 year","1 year"], goalsBeyond:["goals - beyond","beyond"],
+  // Fallback when goals aren't split into three columns -- a real file had one flat
+  // "Discovery - Goals" cell. Everything in it goes into the 90 Days bucket, the
+  // nearest-term and least-presumptuous place to put an undifferentiated goals list.
+  goalsGeneric:["discovery - goals","goals"],
 };
 // Stakeholders live on a separate sheet (a list-per-deal doesn't fit flat columns on the
 // Deals sheet without an unwieldy "Stakeholder 1 Name/Stakeholder 2 Name..." scheme) --
@@ -364,13 +380,18 @@ const IMPORT_HEADER_ALIASES = {
 const IMPORT_STAKEHOLDER_ALIASES = {
   company:["company","deal company"], name:["name"], role:["role","title"], designation:["designation"],
   bu:["business unit","bu"], email:["email"], linkedin:["linkedin","linkedin url"], approvalRequired:["approval required"],
+  engagementScore:["engagement score (1-100)","engagement score"],
+  // Holds a sibling stakeholder's *name*, not an id (ids don't exist until insert) --
+  // resolved in a second pass once the whole batch has been written. See insertDeal/
+  // mergeDealFromImport.
+  reportsTo:["reports to"],
 };
 const pickField=(normalizedRow,aliases)=>{for(const a of aliases){if(normalizedRow[a]!==undefined&&normalizedRow[a]!=="")return normalizedRow[a];}return "";};
 // Semicolon-separated -- the simple, standard way to cram a list into one spreadsheet
 // cell, matching this feature's fixed-headers-over-a-mapping-UI level of simplicity.
 const splitListCell=v=>String(v||"").split(";").map(s=>s.trim()).filter(Boolean);
-const IMPORT_TEMPLATE_DEAL_HEADERS=["Company","Contact","Title","Value","Close Date","Industry","Access Code","Welcome Message","Problem","Challenges","Solutions"];
-const IMPORT_TEMPLATE_STAKEHOLDER_HEADERS=["Company","Name","Role","Designation","Business Unit","Email","LinkedIn","Approval Required"];
+const IMPORT_TEMPLATE_DEAL_HEADERS=["Company","Contact","Title","Value","Close Date","Industry","Access Code","Welcome Message","Problem","Challenges","Solutions","Discovery - Summary","Discovery - Corporate Strategy","Discovery - Outcomes","Discovery - Challenges","Discovery - Primary Use Case","Goals - 90 Days","Goals - 1 Year","Goals - Beyond"];
+const IMPORT_TEMPLATE_STAKEHOLDER_HEADERS=["Company","Name","Role","Designation","Business Unit","Email","LinkedIn","Approval Required","Engagement Score (1-100)","Reports To"];
 
 const DealCreator = ({onSave,onImport,onClose}) => {
   const [step,setStep]=useState(1);const [mode,setMode]=useState(null);const [tx,setTx]=useState("");const [loading,setLoading]=useState(false);
@@ -383,11 +404,11 @@ const DealCreator = ({onSave,onImport,onClose}) => {
     const wb=XLSX.utils.book_new();
     const dealsSheet=XLSX.utils.aoa_to_sheet([
       IMPORT_TEMPLATE_DEAL_HEADERS,
-      ["Acme Co.","Jane Doe","Renewal","50000","2026-12-31","Tech","","Great to be working with you.","Manual reporting takes hours each week","Slow onboarding; No mobile support; Manual reporting","Automated dashboards; Native mobile app; SSO"],
+      ["Acme Co.","Jane Doe","Renewal","50000","2026-12-31","Tech","","Great to be working with you.","Manual reporting takes hours each week","Slow onboarding; No mobile support; Manual reporting","Automated dashboards; Native mobile app; SSO","Acme Co. is a mid-market distributor modernizing its ops stack.","Consolidate point tools into one platform","Cut manual reporting time; improve forecast accuracy","Fragmented tools; no shared visibility across teams","Running a multi-stakeholder evaluation with a trackable action plan","Confirm budget and technical fit","Full team onboarded and first workflows live","Platform embedded as the team's default workflow"],
     ]);
     const stakeholdersSheet=XLSX.utils.aoa_to_sheet([
       IMPORT_TEMPLATE_STAKEHOLDER_HEADERS,
-      ["Acme Co.","Jane Doe","VP Operations","decision-maker","Operations","jane@acme.com","https://linkedin.com/in/janedoe","yes"],
+      ["Acme Co.","Jane Doe","VP Operations","decision-maker","Operations","jane@acme.com","https://linkedin.com/in/janedoe","yes","88",""],
     ]);
     XLSX.utils.book_append_sheet(wb,dealsSheet,"Deals");
     XLSX.utils.book_append_sheet(wb,stakeholdersSheet,"Stakeholders");
@@ -407,6 +428,12 @@ const DealCreator = ({onSave,onImport,onClose}) => {
       const norm=Object.fromEntries(Object.entries(row).map(([k,v])=>[String(k).trim().toLowerCase(),v]));
       const company=String(pickField(norm,IMPORT_HEADER_ALIASES.company)).trim();
       if(!company){errors.push(`Deals row ${i+2}: missing Company, skipped`);return;}
+      const goals90=splitListCell(pickField(norm,IMPORT_HEADER_ALIASES.goals90));
+      const goals1yr=splitListCell(pickField(norm,IMPORT_HEADER_ALIASES.goals1yr));
+      const goalsBeyond=splitListCell(pickField(norm,IMPORT_HEADER_ALIASES.goalsBeyond));
+      // No split-by-period columns present -- fall back to putting one flat Goals cell
+      // entirely in the nearest-term bucket rather than guessing how to divide it up.
+      const goalsGeneric=(!goals90.length&&!goals1yr.length&&!goalsBeyond.length)?splitListCell(pickField(norm,IMPORT_HEADER_ALIASES.goalsGeneric)):[];
       drafts.push({
         ...blank,
         company,
@@ -422,6 +449,15 @@ const DealCreator = ({onSave,onImport,onClose}) => {
           problem:String(pickField(norm,IMPORT_HEADER_ALIASES.problem)).trim(),
           challenges:splitListCell(pickField(norm,IMPORT_HEADER_ALIASES.challenges)),
           solutions:splitListCell(pickField(norm,IMPORT_HEADER_ALIASES.solutions)),
+        },
+        discovery:{
+          summary:String(pickField(norm,IMPORT_HEADER_ALIASES.discoverySummary)).trim(),
+          corporateStrategy:splitListCell(pickField(norm,IMPORT_HEADER_ALIASES.corporateStrategy)),
+          topOutcomes:splitListCell(pickField(norm,IMPORT_HEADER_ALIASES.topOutcomes)),
+          challenges:splitListCell(pickField(norm,IMPORT_HEADER_ALIASES.discoveryChallenges)),
+          jobsToBeDone:[],
+          primaryUseCase:String(pickField(norm,IMPORT_HEADER_ALIASES.primaryUseCase)).trim(),
+          goals:{"90 Days":[...goals90,...goalsGeneric],"1 Year":goals1yr,"Beyond":goalsBeyond},
         },
         stakeholders:[],
       });
@@ -439,6 +475,7 @@ const DealCreator = ({onSave,onImport,onClose}) => {
         const designationRaw=String(pickField(norm,IMPORT_STAKEHOLDER_ALIASES.designation)).trim().toLowerCase();
         const designation=DESIG_CFG[designationRaw]?designationRaw:"influencer";
         const approvalText=String(pickField(norm,IMPORT_STAKEHOLDER_ALIASES.approvalRequired)).trim().toLowerCase();
+        const engagementRaw=parseInt(pickField(norm,IMPORT_STAKEHOLDER_ALIASES.engagementScore),10);
         deal.stakeholders.push({
           name,
           role:String(pickField(norm,IMPORT_STAKEHOLDER_ALIASES.role)).trim(),
@@ -447,7 +484,8 @@ const DealCreator = ({onSave,onImport,onClose}) => {
           email:String(pickField(norm,IMPORT_STAKEHOLDER_ALIASES.email)).trim(),
           linkedin:String(pickField(norm,IMPORT_STAKEHOLDER_ALIASES.linkedin)).trim(),
           approvalRequired:["yes","true","1"].includes(approvalText),
-          engagement:50,
+          engagement:isNaN(engagementRaw)?50:Math.max(0,Math.min(100,engagementRaw)),
+          reportsToName:String(pickField(norm,IMPORT_STAKEHOLDER_ALIASES.reportsTo)).trim(),
         });
       });
     }
@@ -1086,6 +1124,23 @@ function DealRoom({prospectShareSlug}) {
   const deal=deals.find(d=>d.id===activeId);
   const flash=msg=>{setToast(msg);setTimeout(()=>setToast(null),2800);};
 
+  // Import-only: a spreadsheet's "Reports To" column holds a sibling stakeholder's name,
+  // not an id -- ids don't exist until after insert. Matches both self and target by name
+  // (not array position) against the full set of stakeholders now on the deal (existing
+  // + newly inserted), so it works whether the manager is a brand-new row or one already
+  // on the deal. A name that doesn't match anyone is left unset, not an error.
+  const resolveReportsTo=async(sourceStakeholders,allDealStakeholders)=>{
+    const byName=name=>allDealStakeholders.find(r=>r.name.toLowerCase()===name.toLowerCase());
+    for(const s of sourceStakeholders){
+      if(!s.reportsToName)continue;
+      const self=byName(s.name);
+      const target=byName(s.reportsToName);
+      if(self&&target&&self.id!==target.id&&!self.reports_to){
+        await sb.from("stakeholders").update({reports_to:target.id}).eq("id",self.id);
+      }
+    }
+  };
+
   // Just the inserts, no UI feedback -- shared by the single-deal flow (createDeal) and
   // the bulk spreadsheet import (importDeals), which each need their own toast/refresh
   // behavior (one per deal vs. one summary for the whole batch) rather than duplicating
@@ -1117,11 +1172,12 @@ function DealRoom({prospectShareSlug}) {
     if(error||!newDeal)return{ok:false};
 
     if((draft.stakeholders||[]).length){
-      await sb.from("stakeholders").insert(draft.stakeholders.map(s=>({
+      const{data:inserted}=await sb.from("stakeholders").insert(draft.stakeholders.map(s=>({
         deal_id:newDeal.id,created_by:session.user.id,name:s.name,role_title:s.role,
         designation:s.designation,engagement_score:s.engagement??50,business_unit:s.bu||null,
-        approval_required:!!s.approvalRequired,linkedin_url:s.linkedin||null,
-      })));
+        email:s.email||null,approval_required:!!s.approvalRequired,linkedin_url:s.linkedin||null,
+      }))).select();
+      await resolveReportsTo(draft.stakeholders,inserted);
     }
     if((draft.mapItems||[]).length){
       await sb.from("deal_tasks").insert(draft.mapItems.map((t,i)=>({
@@ -1163,19 +1219,31 @@ function DealRoom({prospectShareSlug}) {
     if(!(es.challenges||[]).length&&draft.execSummary.challenges.length){es.challenges=draft.execSummary.challenges;esChanged=true;}
     if(!(es.solutions||[]).length&&draft.execSummary.solutions.length){es.solutions=draft.execSummary.solutions;esChanged=true;}
     if(esChanged)patch.exec_summary=es;
+    const disc={...existing.discovery,goals:{...existing.discovery?.goals}};let discChanged=false;
+    if(!disc.summary&&draft.discovery.summary){disc.summary=draft.discovery.summary;discChanged=true;}
+    if(!disc.primaryUseCase&&draft.discovery.primaryUseCase){disc.primaryUseCase=draft.discovery.primaryUseCase;discChanged=true;}
+    ["corporateStrategy","topOutcomes","challenges","jobsToBeDone"].forEach(k=>{
+      if(!(disc[k]||[]).length&&(draft.discovery[k]||[]).length){disc[k]=draft.discovery[k];discChanged=true;}
+    });
+    GOAL_PERIODS.forEach(period=>{
+      if(!(disc.goals[period]||[]).length&&(draft.discovery.goals[period]||[]).length){disc.goals[period]=draft.discovery.goals[period];discChanged=true;}
+    });
+    if(discChanged)patch.discovery=disc;
     if(Object.keys(patch).length){
       const{error}=await sb.from("deals").update(patch).eq("id",existing.id);
       if(error)return{ok:false};
     }
 
+    const insertedNew=[];
     for(const s of draft.stakeholders){
       const match=existing.stakeholders.find(es2=>es2.name.toLowerCase()===s.name.toLowerCase());
       if(!match){
-        await sb.from("stakeholders").insert({
+        const{data}=await sb.from("stakeholders").insert({
           deal_id:existing.id,created_by:session.user.id,name:s.name,role_title:s.role,
-          designation:s.designation,engagement_score:50,business_unit:s.bu||null,
+          designation:s.designation,engagement_score:s.engagement??50,business_unit:s.bu||null,
           email:s.email||null,linkedin_url:s.linkedin||null,approval_required:!!s.approvalRequired,
-        });
+        }).select().single();
+        if(data)insertedNew.push(data);
         continue;
       }
       const sPatch={};
@@ -1183,16 +1251,38 @@ function DealRoom({prospectShareSlug}) {
       if(!match.bu&&s.bu)sPatch.business_unit=s.bu;
       if(!match.email&&s.email)sPatch.email=s.email;
       if(!match.linkedin&&s.linkedin)sPatch.linkedin_url=s.linkedin;
+      // engagement_score always has a value (50 default at creation) -- only treat that
+      // exact default as "still unset" so a real, deliberately-recorded 50 isn't churned.
+      if(match.engagement===50&&s.engagement!==50)sPatch.engagement_score=s.engagement;
       if(Object.keys(sPatch).length)await sb.from("stakeholders").update(sPatch).eq("id",match.id);
     }
+    const allDealStakeholders=[
+      ...existing.stakeholders.map(s=>({id:s.id,name:s.name,reports_to:s.reportsTo})),
+      ...insertedNew.map(r=>({id:r.id,name:r.name,reports_to:r.reports_to})),
+    ];
+    await resolveReportsTo(draft.stakeholders,allDealStakeholders);
     return{ok:true,action:"updated"};
   };
 
   const importDeals=async(drafts)=>{
-    const results=await Promise.all(drafts.map(draft=>{
-      const existing=deals.find(d=>d.company.toLowerCase()===draft.company.toLowerCase());
-      return existing?mergeDealFromImport(existing,draft):insertDeal(draft);
-    }));
+    // Matches against a fresh read from Supabase, not the deals already sitting in React
+    // state -- if a previous import's post-import refetch (setRefreshKey below) hadn't
+    // resolved yet by the time this import started, matching against stale state would
+    // miss a company that in fact already exists, creating a duplicate instead of
+    // updating it. Also processed sequentially (not Promise.all) and the tracking list
+    // is appended to after each row, so two rows for the same new company *within the
+        // same file* also merge into one instead of creating two.
+    const{data:freshRows}=await sb.from("deals").select("*, stakeholders(*)").eq("org_id",orgId).is("archived_at",null);
+    const known=(freshRows||[]).map(mapDealFromDb);
+    const results=[];
+    for(const draft of drafts){
+      const existing=known.find(d=>d.company.toLowerCase()===draft.company.toLowerCase());
+      const result=existing?await mergeDealFromImport(existing,draft):await insertDeal(draft);
+      if(result.ok&&result.action==="created"){
+        known.push({...draft,id:result.id,company:draft.company,stakeholders:[]});
+      }
+      results.push(result);
+    }
     const createdCount=results.filter(r=>r.ok&&r.action==="created").length;
     const updatedCount=results.filter(r=>r.ok&&r.action==="updated").length;
     const failCount=results.filter(r=>!r.ok).length;
