@@ -43,6 +43,13 @@ function mapDealFromDb(row) {
   return {
     id: row.id,
     orgId: row.org_id,
+    createdBy: row.created_by,
+    // Only present on the prospect-RPC path (get_deal_for_prospect, 0016) which embeds
+    // these directly since a real prospect's own RLS can't read profiles/organizations.
+    // The rep path resolves the same two fields itself, from data it's already fetching
+    // for the avatar-cluster feature -- see the org-loading effect below.
+    repProfile: row.rep ? {name:row.rep.full_name||row.rep.email, email:row.rep.email, photo:row.rep.avatar_url, title:row.rep.title, phone:row.rep.phone, linkedin:row.rep.linkedin_url, initials:initialsOf(row.rep.full_name||row.rep.email)} : null,
+    orgName: row.org_name || null,
     company: row.company_name,
     contact: row.primary_contact_name,
     title: row.title,
@@ -175,8 +182,6 @@ const LOGO_MARK = (
   </svg>
 );
 
-const AE = { name:"Mark Huckins", title:"Sr. Account Executive", company:"Salsify", email:"mark.huckins@gmail.com", phone:"+1-858-752-4321", linkedin:"https://linkedin.com/in/markhuckins", initials:"MH",
-  photo:"https://media.licdn.com/dms/image/v2/D5603AQGEzOXSHDFOqA/profile-displayphoto-shrink_200_200/profile-displayphoto-shrink_200_200/0/1699997107933?e=2147483647&v=beta&t=IymYW4hFsxj3t0BKhS4a9B-HxCFjzjBm1V9_QNUcbAs" };
 
 // Fixed order, not derived from Object.keys/entries -- a JSONB blob's key order depends on
 // however it was written (a different AI-extraction or import run could produce these in
@@ -290,7 +295,10 @@ const ProspectLogin = ({deal,shareSlug,onSuccess}) => {
       <div style={{display:"flex",alignItems:"center",gap:8,marginTop:20,padding:"12px 14px",background:P.accentLight,borderRadius:8,border:`1px solid #F0C9B7`}}>
         <span style={{fontSize:14}}>🔒</span><span style={{fontSize:11,color:P.accent,fontWeight:500,lineHeight:1.5}}>This workspace is private. Only authorized participants with a valid access code can enter.</span>
       </div>
-      <div style={{textAlign:"center",marginTop:18,fontSize:11,color:P.textMute}}>No code? Contact <span style={{color:P.accent,fontWeight:600}}>{AE.email}</span></div>
+      {/* Only known during a rep's own preview (deal is passed) -- a real prospect hasn't
+          authenticated yet, so which rep to contact isn't known client-side at this
+          point. Previously showed one hardcoded person's email regardless. */}
+      {deal?.repProfile?.email&&<div style={{textAlign:"center",marginTop:18,fontSize:11,color:P.textMute}}>No code? Contact <span style={{color:P.accent,fontWeight:600}}>{deal.repProfile.email}</span></div>}
     </div>
   </div>);
 };
@@ -695,15 +703,19 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
   const [inviteRole,setInviteRole]=useState("member");
   const [orgName,setOrgName]=useState("");
   const [logoUploading,setLogoUploading]=useState(false);
+  const [myProfileData,setMyProfileData]=useState(null);
+  const [profileDraft,setProfileDraft]=useState({fullName:"",title:"",phone:"",linkedin:""});
+  const [avatarUploading,setAvatarUploading]=useState(false);
 
   const load=async()=>{
     setLoading(true);setError("");
-    const [{data:mem,error:memErr},{data:inv,error:invErr},{data:orgRow,error:orgErr}]=await Promise.all([
+    const [{data:mem,error:memErr},{data:inv,error:invErr},{data:orgRow,error:orgErr},{data:myProf,error:myProfErr}]=await Promise.all([
       sb.from("organization_members").select("id,user_id,role,created_at").eq("org_id",orgId),
       sb.from("org_invitations").select("id,email,role,created_at,expires_at").eq("org_id",orgId).is("accepted_at",null),
       sb.from("organizations").select("name,logo_url").eq("id",orgId).single(),
+      sb.from("profiles").select("full_name,email,title,phone,linkedin_url,avatar_url").eq("id",myUserId).single(),
     ]);
-    if(memErr||invErr||orgErr){setError("Couldn't load settings");setLoading(false);return;}
+    if(memErr||invErr||orgErr||myProfErr){setError("Couldn't load settings");setLoading(false);return;}
     // organization_members and profiles both reference auth.users independently -- no
     // direct FK between them, so PostgREST can't embed this in one query. Same
     // merge-in-JS pattern already used for view stats/visits in the main loading effect.
@@ -714,6 +726,8 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
     setInvites(inv||[]);
     setOrg(orgRow);
     setOrgName(orgRow?.name||"");
+    setMyProfileData(myProf);
+    setProfileDraft({fullName:myProf?.full_name||"",title:myProf?.title||"",phone:myProf?.phone||"",linkedin:myProf?.linkedin_url||""});
     setLoading(false);
   };
   useEffect(()=>{load();},[orgId]);
@@ -748,6 +762,27 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
     setLogoUploading(false);load();
   };
 
+  const saveMyProfile=async()=>{
+    const {error:err}=await sb.from("profiles").update({
+      full_name:profileDraft.fullName||null,title:profileDraft.title||null,
+      phone:profileDraft.phone||null,linkedin_url:profileDraft.linkedin||null,
+    }).eq("id",myUserId);
+    if(err){setError("Couldn't save profile");return;}
+    setError("");load();
+  };
+
+  // Self-scoped bucket (0016) -- own path, own RLS, no admin-only gate like org logos.
+  const uploadAvatar=async file=>{
+    setAvatarUploading(true);
+    const path=`${myUserId}/avatar`;
+    const {error:upErr}=await sb.storage.from("avatars").upload(path,file,{upsert:true,contentType:file.type});
+    if(upErr){setError("Couldn't upload photo");setAvatarUploading(false);return;}
+    const {data:{publicUrl}}=sb.storage.from("avatars").getPublicUrl(path);
+    const {error:updErr}=await sb.from("profiles").update({avatar_url:publicUrl}).eq("id",myUserId);
+    if(updErr){setError("Couldn't save photo");setAvatarUploading(false);return;}
+    setAvatarUploading(false);load();
+  };
+
   const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
 
   return (<div style={{position:"fixed",inset:0,background:"rgba(17,24,39,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
@@ -757,7 +792,7 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
         <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,color:P.textMute,cursor:"pointer"}}>×</button>
       </div>
       <div style={{padding:"14px 24px 0",display:"flex",gap:4,borderBottom:`1px solid ${P.border}`}}>
-        {[["team","Team"],["general","General"]].map(([k,l])=>(
+        {[["team","Team"],["general","General"],["profile","My Profile"]].map(([k,l])=>(
           <button key={k} onClick={()=>setTab(k)} style={{padding:"8px 14px",background:"none",border:"none",borderBottom:`2px solid ${tab===k?P.accent:"transparent"}`,color:tab===k?P.accent:P.textSec,fontSize:13,fontWeight:tab===k?700:400,cursor:"pointer"}}>{l}</button>
         ))}
       </div>
@@ -821,6 +856,24 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
               <input type="file" accept="image/*" onChange={e=>e.target.files[0]&&uploadLogo(e.target.files[0])} style={{display:"none"}} disabled={logoUploading}/>
             </label>
           </div>
+        </div>}
+
+        {tab==="profile"&&<div>
+          <div style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>Photo</div>
+          <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:20}}>
+            {myProfileData?.avatar_url?<img src={myProfileData.avatar_url} alt="Your photo" style={{width:52,height:52,borderRadius:"50%",objectFit:"cover",border:`1px solid ${P.border}`}}/>
+            :<div style={{width:52,height:52,borderRadius:"50%",background:P.accentLight,color:P.accentMid,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:700}}>{initialsOf(profileDraft.fullName||myProfileData?.email||"")||"?"}</div>}
+            <label style={{padding:"8px 16px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:6,fontSize:12,fontWeight:600,color:P.textSec,cursor:"pointer"}}>
+              {avatarUploading?"Uploading…":"Upload photo"}
+              <input type="file" accept="image/*" onChange={e=>e.target.files[0]&&uploadAvatar(e.target.files[0])} style={{display:"none"}} disabled={avatarUploading}/>
+            </label>
+          </div>
+          <div style={{marginBottom:14}}><label style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:6}}>Name</label><input value={profileDraft.fullName} onChange={e=>setProfileDraft(d=>({...d,fullName:e.target.value}))} style={inp}/></div>
+          <div style={{marginBottom:14}}><label style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:6}}>Title</label><input value={profileDraft.title} onChange={e=>setProfileDraft(d=>({...d,title:e.target.value}))} placeholder="Sr. Account Executive" style={inp}/></div>
+          <div style={{marginBottom:14}}><label style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:6}}>Phone</label><input value={profileDraft.phone} onChange={e=>setProfileDraft(d=>({...d,phone:e.target.value}))} style={inp}/></div>
+          <div style={{marginBottom:20}}><label style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:6}}>LinkedIn URL</label><input value={profileDraft.linkedin} onChange={e=>setProfileDraft(d=>({...d,linkedin:e.target.value}))} style={inp}/></div>
+          <div style={{fontSize:11,color:P.textMute,lineHeight:1.6,marginBottom:16}}>This is what your prospects see on the Welcome tab of any deal room you create.</div>
+          <button onClick={saveMyProfile} style={{padding:"9px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Save Profile</button>
         </div>}
         </>}
       </div>
@@ -965,6 +1018,7 @@ function DealRoom({prospectShareSlug}) {
   const [refreshKey,setRefreshKey]=useState(0);
   const [orgId,setOrgId]=useState(null);
   const [myRole,setMyRole]=useState(null);
+  const [myProfile,setMyProfile]=useState(null); // the logged-in user's own profile -- sidebar identity, not "who created this deal"
   const [showSettings,setShowSettings]=useState(false);
   const [loadingDeals,setLoadingDeals]=useState(!prospectShareSlug);
   const [deals,setDeals]=useState([]);
@@ -1067,13 +1121,18 @@ function DealRoom({prospectShareSlug}) {
       const allDocIds=mapped.flatMap(d=>d.content.map(c=>c.id));
       const allDealIds=mapped.map(d=>d.id);
       const allContributorIds=Array.from(new Set(mapped.flatMap(d=>d.contributorIds)));
-      const [{data:viewStats},{data:visits},{data:contributors},{data:riskRows}]=await Promise.all([
+      const [{data:viewStats},{data:visits},{data:contributors},{data:riskRows},{data:orgRow},{data:myProfileRow}]=await Promise.all([
         allDocIds.length?sb.from("document_view_stats").select("*").in("document_id",allDocIds):{data:[]},
         allDealIds.length?sb.from("deal_visits").select("*, deal_visit_actions(*)").in("deal_id",allDealIds).order("started_at",{ascending:false}):{data:[]},
         // profiles has no direct FK to deals/stakeholders/etc, so this can't be embedded in
         // the main deals query -- same merge-in-JS pattern SettingsModal uses for members.
-        allContributorIds.length?sb.from("profiles").select("id,email,full_name").in("id",allContributorIds):{data:[]},
+        // Widened beyond id/email/full_name (originally just for the avatar cluster) to
+        // also cover title/phone/linkedin/avatar -- the same fetch now doubles as the
+        // rep-profile source for the Welcome tab's AE card, no extra query needed.
+        allContributorIds.length?sb.from("profiles").select("id,email,full_name,avatar_url,title,phone,linkedin_url").in("id",allContributorIds):{data:[]},
         allDealIds.length?sb.from("deal_risk_signals").select("*").in("deal_id",allDealIds):{data:[]},
+        sb.from("organizations").select("name").eq("id",mem.org_id).single(),
+        sb.from("profiles").select("full_name,email,avatar_url,title").eq("id",session.user.id).single(),
       ]);
       if(cancelled)return;
 
@@ -1082,6 +1141,11 @@ function DealRoom({prospectShareSlug}) {
       (visits||[]).forEach(v=>{(visitsByDeal[v.deal_id]=visitsByDeal[v.deal_id]||[]).push(v);});
       const profileById=Object.fromEntries((contributors||[]).map(p=>[p.id,p]));
       const riskByDeal=Object.fromEntries((riskRows||[]).map(r=>[r.deal_id,r]));
+      const orgName=orgRow?.name||null;
+      if(myProfileRow){
+        const name=myProfileRow.full_name||myProfileRow.email;
+        setMyProfile({name,email:myProfileRow.email,photo:myProfileRow.avatar_url,title:myProfileRow.title,initials:initialsOf(name)});
+      }
 
       const enriched=mapped.map(d=>({
         ...d,
@@ -1106,6 +1170,13 @@ function DealRoom({prospectShareSlug}) {
           const name=p?.full_name||p?.email||"";
           return {id,name:name||"Unknown",initials:initialsOf(name)||"?"};
         }),
+        orgName,
+        repProfile:(()=>{
+          const p=profileById[d.createdBy];
+          if(!p)return null;
+          const name=p.full_name||p.email;
+          return {name,email:p.email,photo:p.avatar_url,title:p.title,phone:p.phone,linkedin:p.linkedin_url,initials:initialsOf(name)};
+        })(),
         risk:(()=>{const r=riskByDeal[d.id];return r?{
           goingCold:r.going_cold,stalled:r.stalled,buyerDisengaged:!!r.disengaged_buyer_name,
           daysSinceVisit:r.days_since_visit,daysSinceTaskActivity:r.days_since_task_activity,
@@ -1665,8 +1736,10 @@ select option{background:#fff}
         <button onClick={()=>setShowCreator(true)} style={{width:"100%",marginTop:8,display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:11,border:"1.5px dashed rgba(255,255,255,0.25)",borderRadius:9,background:"transparent",color:"rgba(255,255,255,0.85)",fontSize:13.5,fontWeight:600,cursor:"pointer"}}>+ New Deal Room</button>
       </div>
       <div style={{paddingTop:12,marginTop:12,borderTop:"1px solid rgba(255,255,255,0.08)",display:"flex",alignItems:"center",gap:10}}>
-        <img src={AE.photo} alt={AE.name} style={{width:34,height:34,borderRadius:"50%",objectFit:"cover",flexShrink:0}} onError={e=>{e.target.outerHTML=`<div style="width:34px;height:34px;border-radius:50%;background:${P.accent};display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;flex-shrink:0">${AE.initials}</div>`;}}/>
-        <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#fff"}}>{AE.name}</div><div style={{fontSize:11,color:"rgba(255,255,255,0.4)",marginTop:1}}>{AE.title}</div></div>
+        {myProfile?.photo?
+          <img src={myProfile.photo} alt={myProfile.name} style={{width:34,height:34,borderRadius:"50%",objectFit:"cover",flexShrink:0}}/>
+        :<div style={{width:34,height:34,borderRadius:"50%",background:P.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color:"#fff",flexShrink:0}}>{myProfile?.initials||"?"}</div>}
+        <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#fff",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{myProfile?.name||session?.user?.email||"…"}</div>{myProfile?.title&&<div style={{fontSize:11,color:"rgba(255,255,255,0.4)",marginTop:1}}>{myProfile.title}</div>}</div>
         {(myRole==="owner"||myRole==="admin")&&<button onClick={()=>setShowSettings(true)} title="Team & Settings" style={{background:"none",border:"none",color:"rgba(255,255,255,0.5)",fontSize:14,cursor:"pointer",flexShrink:0}}>⚙</button>}
         <button onClick={()=>sb.auth.signOut()} title="Sign out" style={{background:"none",border:"none",color:"rgba(255,255,255,0.5)",fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0}}>Sign out</button>
       </div>
@@ -1733,14 +1806,19 @@ select option{background:#fff}
               <div className="headline" style={{fontSize:24,color:"#fff",marginBottom:8}}>Welcome, {deal.company}</div>
               <div style={{fontSize:14,color:"rgba(255,255,255,0.85)",lineHeight:1.7,maxWidth:560}}>{deal.welcomeMsg}</div>
             </div>
-            {/* AE Profile Card */}
-            <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:12,padding:"22px 24px",marginBottom:20,display:"flex",gap:20}}>
-              <img src={AE.photo} alt={AE.name} style={{width:72,height:72,borderRadius:"50%",objectFit:"cover",border:`3px solid ${P.border}`,flexShrink:0,boxShadow:"0 2px 12px rgba(0,0,0,0.12)"}} onError={e=>{e.target.outerHTML=`<div style="width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,${P.accent},${P.accentMid});display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800;color:#fff;flex-shrink:0">${AE.initials}</div>`;}} />
+            {/* AE Profile Card -- the deal's actual creator, not the currently-logged-in
+                viewer (a manager previewing a teammate's deal should see that teammate
+                here, not themselves). Optional fields (title/phone/LinkedIn) a rep hasn't
+                filled in yet are simply omitted, never shown blank. */}
+            {deal.repProfile&&<div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:12,padding:"22px 24px",marginBottom:20,display:"flex",gap:20}}>
+              {deal.repProfile.photo?
+                <img src={deal.repProfile.photo} alt={deal.repProfile.name} style={{width:72,height:72,borderRadius:"50%",objectFit:"cover",border:`3px solid ${P.border}`,flexShrink:0,boxShadow:"0 2px 12px rgba(0,0,0,0.12)"}}/>
+              :<div style={{width:72,height:72,borderRadius:"50%",background:`linear-gradient(135deg,${P.accent},${P.accentMid})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,fontWeight:800,color:"#fff",flexShrink:0}}>{deal.repProfile.initials}</div>}
               <div style={{flex:1}}>
-                <div style={{fontSize:16,fontWeight:800,color:P.text,marginBottom:2}}>{AE.name}</div>
-                <div style={{fontSize:12,color:P.textSec,marginBottom:1}}>{AE.title} at {AE.company}</div>
-                <div style={{fontSize:12,color:P.textMute,marginBottom:1}}>{AE.email}</div>
-                <div style={{fontSize:12,color:P.textMute,marginBottom:14}}>{AE.phone}</div>
+                <div style={{fontSize:16,fontWeight:800,color:P.text,marginBottom:2}}>{deal.repProfile.name}</div>
+                {(deal.repProfile.title||deal.orgName)&&<div style={{fontSize:12,color:P.textSec,marginBottom:1}}>{[deal.repProfile.title,deal.orgName].filter(Boolean).join(" at ")}</div>}
+                <div style={{fontSize:12,color:P.textMute,marginBottom:1}}>{deal.repProfile.email}</div>
+                {deal.repProfile.phone&&<div style={{fontSize:12,color:P.textMute,marginBottom:14}}>{deal.repProfile.phone}</div>}
                 <div style={{fontSize:13,color:P.textSec,lineHeight:1.65,marginBottom:16}}>
                   Hi Team,<br/><br/>This room is for us to collaborate and stay aligned as our partnership progresses.
                   <div style={{marginTop:10}}>
@@ -1750,11 +1828,11 @@ select option{background:#fff}
                   <div style={{marginTop:10}}>Looking forward to working with you on your goals!</div>
                 </div>
                 <div style={{display:"flex",gap:10}}>
-                  <a href={AE.linkedin} target="_blank" rel="noopener noreferrer" style={{padding:"7px 16px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:"#0A66C2",fontSize:12,fontWeight:700,textDecoration:"none",display:"flex",alignItems:"center",gap:5}}>{LI_SVG}LinkedIn</a>
-                  <a href={`mailto:${AE.email}`} style={{padding:"7px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,textDecoration:"none"}}>Reply</a>
+                  {deal.repProfile.linkedin&&<a href={deal.repProfile.linkedin} target="_blank" rel="noopener noreferrer" style={{padding:"7px 16px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:"#0A66C2",fontSize:12,fontWeight:700,textDecoration:"none",display:"flex",alignItems:"center",gap:5}}>{LI_SVG}LinkedIn</a>}
+                  <a href={`mailto:${deal.repProfile.email}`} style={{padding:"7px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,textDecoration:"none"}}>Reply</a>
                 </div>
               </div>
-            </div>
+            </div>}
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:12}}>
               {[{label:"License Amount",val:deal.value,color:P.accent},{label:"Target Close",val:deal.closeDate,color:P.amber},{label:"Tasks Complete",val:`${done}/${visItems.length}`,color:P.green},{label:"Stakeholders",val:deal.stakeholders.length,color:P.purple}].map(({label,val,color})=>(
                 <div key={label} style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:10,padding:"16px 18px",borderTop:`3px solid ${color}`}}>
