@@ -856,6 +856,34 @@ const ShareModal = ({deal,onClose}) => {
 };
 const lbl0={fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6};
 
+// Permanent, not archive -- confirmed explicitly. Cascades cleanly through every child
+// table (stakeholders/tasks/documents/visit logs all have on-delete-cascade FKs to
+// deals), so this is one delete call, not a multi-step cleanup -- but it's irreversible,
+// so unlike every other delete in this app (task/stakeholder/member all skip
+// confirmation), this one requires typing the company name to actually enable the button.
+// Note: uploaded files in the deal-documents Storage bucket are not cleaned up by this --
+// Storage isn't covered by Postgres FK cascade, so they'd become orphaned objects, not
+// errors. Acceptable for now, not fixed here.
+const DeleteDealModal = ({deal,onConfirm,onClose}) => {
+  const [confirmText,setConfirmText]=useState("");
+  const matches=confirmText.trim().toLowerCase()===deal.company.trim().toLowerCase();
+  return (<div style={{position:"fixed",inset:0,background:"rgba(27,31,35,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
+    <div style={{background:P.surface,borderRadius:16,width:460,padding:"24px 24px 28px",boxShadow:"0 24px 64px rgba(0,0,0,0.16)"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+        <span className="headline" style={{fontSize:18,color:P.text}}>Delete Deal Room</span>
+        <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,color:P.textMute,cursor:"pointer"}}>×</button>
+      </div>
+      <div style={{fontSize:12.5,color:P.textSec,marginBottom:16,lineHeight:1.6}}>This permanently deletes <strong style={{color:P.text}}>{deal.company}</strong> and everything under it — stakeholders, tasks, documents, and visit history. This cannot be undone.</div>
+      <div style={lbl0}>Type "{deal.company}" to confirm</div>
+      <input value={confirmText} onChange={e=>setConfirmText(e.target.value)} style={{width:"100%",border:`1px solid ${P.border}`,borderRadius:8,padding:"10px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none",marginBottom:18}}/>
+      <div style={{display:"flex",gap:10}}>
+        <button onClick={onConfirm} disabled={!matches} style={{flex:1,padding:"11px 20px",background:matches?P.red:P.border,border:"none",borderRadius:7,color:"#fff",fontSize:13,fontWeight:700,cursor:matches?"pointer":"not-allowed"}}>Delete Permanently</button>
+        <button onClick={onClose} style={{padding:"11px 18px",background:"none",border:`1px solid ${P.border}`,borderRadius:7,color:P.textSec,fontSize:13,cursor:"pointer"}}>Cancel</button>
+      </div>
+    </div>
+  </div>);
+};
+
 // Add (editing=null) and edit (editing=existing stakeholder) share this one modal, same
 // pattern as DealCreator/SettingsModal/ShareModal. reportsTo excludes the stakeholder
 // itself from the options list -- a stakeholder can't report to themselves.
@@ -952,6 +980,7 @@ function DealRoom({prospectShareSlug}) {
   const [chatInput,setChatInput]=useState("");
   const [showCreator,setShowCreator]=useState(false);
   const [showShare,setShowShare]=useState(false);
+  const [showDeleteDeal,setShowDeleteDeal]=useState(false);
   const [showAddTask,setShowAddTask]=useState(null); // null, or the phase currently showing its Add Task form
   const [editingTask,setEditingTask]=useState(null); // null, or the task currently open in TaskModal
   // Which single Executive Summary section (if any) is being edited -- "problem" |
@@ -1195,6 +1224,18 @@ function DealRoom({prospectShareSlug}) {
     setShowCreator(false);
     flash("Deal room created!");
     setRefreshKey(k=>k+1);
+  };
+
+  const deleteDeal=async(dealId)=>{
+    const{error}=await sb.from("deals").delete().eq("id",dealId);
+    if(error){flash("Couldn't delete deal room");return;}
+    setDeals(prev=>{
+      const remaining=prev.filter(d=>d.id!==dealId);
+      if(activeId===dealId)setActiveId(remaining[0]?.id??null);
+      return remaining;
+    });
+    setShowDeleteDeal(false);
+    flash("Deal room deleted");
   };
 
   // One row = one deal, per Mark's explicit scope call: bulk-onboarding an existing
@@ -1617,6 +1658,7 @@ select option{background:#fff}
     </div>}
     {showSettings&&<SettingsModal orgId={orgId} myUserId={session?.user?.id} myRole={myRole} onClose={()=>setShowSettings(false)}/>}
     {showShare&&<ShareModal deal={deal} onClose={()=>setShowShare(false)}/>}
+    {showDeleteDeal&&<DeleteDealModal deal={deal} onClose={()=>setShowDeleteDeal(false)} onConfirm={()=>deleteDeal(deal.id)}/>}
 
     {/* MAIN */}
     <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
@@ -1655,6 +1697,7 @@ select option{background:#fff}
             <button onClick={()=>setShowShare(true)} className="hv" style={{padding:"7px 14px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:11,fontWeight:700,cursor:"pointer",textTransform:"uppercase",letterSpacing:"0.04em"}}>↗ Share</button>
             <button onClick={()=>runAI("brief")} className="hv" style={{padding:"7px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer",textTransform:"uppercase",letterSpacing:"0.04em"}}>✦ Deal Brief</button>
             <button onClick={()=>{setAiOpen(!aiOpen);setAiText("");}} className="hv" style={{padding:"7px 14px",background:aiOpen?P.accentLight:P.bg,border:`1px solid ${aiOpen?P.accentMid:P.border}`,borderRadius:6,color:aiOpen?P.accent:P.textSec,fontSize:11,fontWeight:700,cursor:"pointer",textTransform:"uppercase",letterSpacing:"0.04em"}}>AI Coach</button>
+            <button onClick={()=>setShowDeleteDeal(true)} title="Delete Deal Room" style={{padding:"7px 10px",background:"none",border:"none",color:P.textMute,fontSize:11,fontWeight:700,cursor:"pointer"}}>🗑</button>
           </>}
         </div>
       </div>
