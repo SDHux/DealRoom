@@ -59,6 +59,9 @@ function mapDealFromDb(row) {
     welcomeMsg: row.welcome_message,
     execSummary: row.exec_summary || {},
     discovery: row.discovery || {},
+    // Per-field overrides for MEDDPIC -- an entry present here means "show this stored
+    // text instead of deriving it," absent/empty means "keep deriving as before."
+    meddpic: row.meddpic || {},
     stakeholders: (row.stakeholders || []).map(s => ({
       id: s.id,
       name: s.name,
@@ -989,6 +992,8 @@ function DealRoom({prospectShareSlug}) {
   // (a string for problem, an array for challenges/solutions).
   const [editingSummarySection,setEditingSummarySection]=useState(null);
   const [summarySectionDraft,setSummarySectionDraft]=useState(null);
+  const [editingMeddpicSection,setEditingMeddpicSection]=useState(null); // null | one of the 7 keys
+  const [meddpicSectionDraft,setMeddpicSectionDraft]=useState("");
   const [editingDiscovery,setEditingDiscovery]=useState(false);
   const [discoveryDraft,setDiscoveryDraft]=useState(null);
   const [showStakeholderModal,setShowStakeholderModal]=useState(false);
@@ -1431,6 +1436,16 @@ function DealRoom({prospectShareSlug}) {
     if(error){flash("Couldn't save changes");return;}
     setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,discovery:newDiscovery}));
     flash("Discovery updated");
+  };
+
+  // Writes one MEDDPIC field as a stored override -- every other field keeps deriving
+  // from Discovery/Stakeholders/Action Plan exactly as before, untouched.
+  const updateMeddpicField=async(key,text)=>{
+    const newMeddpic={...deal.meddpic,[key]:text};
+    const {error}=await sb.from("deals").update({meddpic:newMeddpic}).eq("id",deal.id);
+    if(error){flash("Couldn't save changes");return;}
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,meddpic:newMeddpic}));
+    flash("MEDDPIC updated");
   };
 
   const addStakeholder=async(draft)=>{
@@ -1997,16 +2012,14 @@ select option{background:#fff}
             />}
           </div>}
 
-          {/* MEDDPIC -- fully derived, read-only, no separate edit surface or storage: if
-              something here is wrong, fix it at the source (Discovery, Stakeholders, or
-              Action Plan) and this tab reflects it automatically. Decision Criteria and
-              Decision Process are deliberately left as "not enough data yet" -- there's no
-              honest, obvious source for either yet, so guessing would be worse than
-              admitting the gap. Rep-only, like Analytics -- a buyer should never see their
-              own economic-buyer/champion/pain analysis laid out via sales methodology. */}
+          {/* MEDDPIC -- derived by default from Discovery/Stakeholders/Action Plan, but any
+              section can be edited into a stored override (deal.meddpic[key]); untouched
+              sections keep auto-deriving forever, exactly as before. Rep-only, like
+              Analytics -- a buyer should never see their own economic-buyer/champion/pain
+              analysis laid out via sales methodology. */}
           {tab==="meddpic"&&viewMode==="rep"&&<div style={{maxWidth:820}}>
             <div className="headline" style={{fontSize:22,color:P.text,marginBottom:6}}>MEDDPIC</div>
-            <div style={{fontSize:13,color:P.textMute,marginBottom:20,lineHeight:1.6}}>Auto-derived from Discovery, Stakeholders, and Action Plan -- edit those tabs to update what shows here.</div>
+            <div style={{fontSize:13,color:P.textMute,marginBottom:20,lineHeight:1.6}}>Auto-derived from Discovery, Stakeholders, and Action Plan — edit a section below to override it, or edit those tabs to update the rest.</div>
             {(()=>{
               const champions=deal.stakeholders.filter(s=>s.designation==="champion");
               const decisionMakers=deal.stakeholders.filter(s=>s.designation==="decision-maker");
@@ -2014,38 +2027,52 @@ select option{background:#fff}
               const cardStyle={background:P.surface,border:`1px solid ${P.border}`,borderRadius:12,padding:"20px 24px",marginBottom:14,boxShadow:"0 1px 2px rgba(27,31,35,0.05), 0 12px 32px -12px rgba(27,31,35,0.16)"};
               const letterStyle={width:32,height:32,borderRadius:8,background:P.accentLight,color:P.accentMid,fontSize:16,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0};
               const empty=<div style={{fontSize:13,color:P.textMute,fontStyle:"italic"}}>Not enough data yet</div>;
-              const Section=({letter,title,children})=>(
-                <div style={cardStyle}>
-                  <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12}}>
-                    <div className="headline" style={letterStyle}>{letter}</div>
-                    <div style={{fontSize:15,fontWeight:700,color:P.text}}>{title}</div>
-                  </div>
-                  {children}
-                </div>
-              );
               const StakeholderList=list=>list.length?<div style={{display:"flex",flexDirection:"column",gap:6}}>{list.map(s=><div key={s.id} style={{fontSize:13,color:P.textSec}}><strong style={{color:P.text}}>{s.name}</strong>{s.role?` — ${s.role}`:""}</div>)}</div>:<div style={{fontSize:13,color:P.textMute,fontStyle:"italic"}}>Not yet identified</div>;
-              return (<>
-                <Section letter="M" title="Metrics">
-                  {(deal.discovery.topOutcomes||[]).length>0&&<ol style={{paddingLeft:20,marginBottom:10}}>{deal.discovery.topOutcomes.map((o,i)=><li key={i} style={{fontSize:13,color:P.textSec,lineHeight:1.6,marginBottom:4}}>{o}</li>)}</ol>}
-                  {GOAL_PERIODS.some(p=>(deal.discovery.goals?.[p]||[]).length)?
-                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
-                      {GOAL_PERIODS.map(period=>(<div key={period}>
-                        <div className="mono" style={{fontSize:10,fontWeight:600,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:6}}>{period}</div>
-                        {(deal.discovery.goals?.[period]||[]).map((g,i)=><div key={i} style={{fontSize:12,color:P.textSec,marginBottom:3}}>· {g}</div>)}
-                      </div>))}
+              const Section=({letter,title,mkey,derived,derivedPlainText})=>{
+                const override=deal.meddpic?.[mkey];
+                const editing=editingMeddpicSection===mkey;
+                return (<div style={cardStyle}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+                    <div style={{display:"flex",alignItems:"center",gap:12}}>
+                      <div className="headline" style={letterStyle}>{letter}</div>
+                      <div style={{fontSize:15,fontWeight:700,color:P.text}}>{title}</div>
                     </div>
-                  :!(deal.discovery.topOutcomes||[]).length&&empty}
-                </Section>
-                <Section letter="E" title="Economic Buyer">{StakeholderList(decisionMakers)}</Section>
-                <Section letter="D" title="Decision Criteria">{empty}</Section>
-                <Section letter="D" title="Decision Process">{empty}</Section>
-                <Section letter="P" title="Paper Process">
-                  {paperProcessTasks.length?<div style={{display:"flex",flexDirection:"column",gap:6}}>{paperProcessTasks.map(t=><div key={t.id} style={{fontSize:13,color:P.textSec,display:"flex",alignItems:"center",gap:8}}><span style={{width:6,height:6,borderRadius:"50%",background:t.status==="complete"?P.green:P.border,flexShrink:0}}/>{t.task}</div>)}</div>:empty}
-                </Section>
-                <Section letter="I" title="Identify Pain">
-                  {(deal.discovery.challenges||[]).length?<ol style={{paddingLeft:20}}>{deal.discovery.challenges.map((c,i)=><li key={i} style={{fontSize:13,color:P.textSec,lineHeight:1.6,marginBottom:4}}>{c}</li>)}</ol>:empty}
-                </Section>
-                <Section letter="C" title="Champion">{StakeholderList(champions)}</Section>
+                    {editing?<div style={{display:"flex",gap:8}}>
+                      <button onClick={()=>{updateMeddpicField(mkey,meddpicSectionDraft);setEditingMeddpicSection(null);}} style={{padding:"6px 14px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Save</button>
+                      <button onClick={()=>setEditingMeddpicSection(null)} style={{padding:"6px 14px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:11,fontWeight:600,cursor:"pointer"}}>Cancel</button>
+                    </div>:<button onClick={()=>{setMeddpicSectionDraft(override||derivedPlainText||"");setEditingMeddpicSection(mkey);}} style={{padding:"6px 14px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:11,fontWeight:600,cursor:"pointer"}}>Edit</button>}
+                  </div>
+                  {editing?
+                    <textarea value={meddpicSectionDraft} onChange={e=>setMeddpicSectionDraft(e.target.value)} style={{width:"100%",height:90,border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",lineHeight:1.6,resize:"vertical",outline:"none"}}/>
+                  :override?
+                    override.split("\n").map((line,i)=><p key={i} style={{fontSize:13,color:P.textSec,lineHeight:1.6,marginBottom:4}}>{line}</p>)
+                  :derived}
+                </div>);
+              };
+              return (<>
+                <Section letter="M" title="Metrics" mkey="metrics"
+                  derivedPlainText={[...(deal.discovery.topOutcomes||[]),...GOAL_PERIODS.flatMap(p=>deal.discovery.goals?.[p]||[])].join("\n")}
+                  derived={<>
+                    {(deal.discovery.topOutcomes||[]).length>0&&<ol style={{paddingLeft:20,marginBottom:10}}>{deal.discovery.topOutcomes.map((o,i)=><li key={i} style={{fontSize:13,color:P.textSec,lineHeight:1.6,marginBottom:4}}>{o}</li>)}</ol>}
+                    {GOAL_PERIODS.some(p=>(deal.discovery.goals?.[p]||[]).length)?
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+                        {GOAL_PERIODS.map(period=>(<div key={period}>
+                          <div className="mono" style={{fontSize:10,fontWeight:600,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:6}}>{period}</div>
+                          {(deal.discovery.goals?.[period]||[]).map((g,i)=><div key={i} style={{fontSize:12,color:P.textSec,marginBottom:3}}>· {g}</div>)}
+                        </div>))}
+                      </div>
+                    :!(deal.discovery.topOutcomes||[]).length&&empty}
+                  </>}/>
+                <Section letter="E" title="Economic Buyer" mkey="economicBuyer" derived={StakeholderList(decisionMakers)} derivedPlainText={decisionMakers.map(s=>`${s.name}${s.role?` — ${s.role}`:""}`).join("\n")}/>
+                <Section letter="D" title="Decision Criteria" mkey="decisionCriteria" derived={empty} derivedPlainText=""/>
+                <Section letter="D" title="Decision Process" mkey="decisionProcess" derived={empty} derivedPlainText=""/>
+                <Section letter="P" title="Paper Process" mkey="paperProcess"
+                  derivedPlainText={paperProcessTasks.map(t=>t.task).join("\n")}
+                  derived={paperProcessTasks.length?<div style={{display:"flex",flexDirection:"column",gap:6}}>{paperProcessTasks.map(t=><div key={t.id} style={{fontSize:13,color:P.textSec,display:"flex",alignItems:"center",gap:8}}><span style={{width:6,height:6,borderRadius:"50%",background:t.status==="complete"?P.green:P.border,flexShrink:0}}/>{t.task}</div>)}</div>:empty}/>
+                <Section letter="I" title="Identify Pain" mkey="identifyPain"
+                  derivedPlainText={(deal.discovery.challenges||[]).join("\n")}
+                  derived={(deal.discovery.challenges||[]).length?<ol style={{paddingLeft:20}}>{deal.discovery.challenges.map((c,i)=><li key={i} style={{fontSize:13,color:P.textSec,lineHeight:1.6,marginBottom:4}}>{c}</li>)}</ol>:empty}/>
+                <Section letter="C" title="Champion" mkey="champion" derived={StakeholderList(champions)} derivedPlainText={champions.map(s=>`${s.name}${s.role?` — ${s.role}`:""}`).join("\n")}/>
               </>);
             })()}
           </div>}
