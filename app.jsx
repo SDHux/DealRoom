@@ -56,6 +56,7 @@ function mapDealFromDb(row) {
     stage: row.stage,
     value: fmtCurrency(row.value_amount, row.currency),
     closeDate: row.close_date,
+    createdAt: row.created_at,
     logo: row.logo_initials,
     color: row.brand_color,
     industry: row.industry,
@@ -118,6 +119,14 @@ function mapDealFromDb(row) {
       ...(row.deal_tasks || []).map(t => t.created_by),
       ...(row.documents || []).map(d => d.created_by),
     ].filter(Boolean))),
+    // How many items each contributor actually touched -- used to make the header
+    // avatar cluster's tooltip say more than just a name (e.g. "added 3 items").
+    contributorCounts: [
+      row.created_by,
+      ...(row.stakeholders || []).map(s => s.created_by),
+      ...(row.deal_tasks || []).map(t => t.created_by),
+      ...(row.documents || []).map(d => d.created_by),
+    ].filter(Boolean).reduce((acc, id) => { acc[id] = (acc[id] || 0) + 1; return acc; }, {}),
     // Default -- only the rep's org-loading effect resolves this to real names (it merges
     // in a profiles lookup that a prospect has no business making). Without this default,
     // a prospect's deal (loaded straight from get_deal_for_prospect, which never runs that
@@ -130,23 +139,78 @@ function mapDealFromDb(row) {
   };
 }
 
-// Turns deal.risk into the ordered, human-readable flags the rep actually sees --
-// sidebar dot, header pill, and the Analytics tab's Deal Health section all call this
-// instead of each re-deriving severity/reason text their own way. Thresholds/rules match
-// the spec exactly: no visit in 3 days ("going cold"), no task progress in 7 days
-// ("stalled"), a decision-maker who's never viewed a document ("buyer disengaged").
+// Turns deal.risk into secondary flags for the Analytics Deal Health card -- buyer-side
+// engagement signals, distinct from the seller-side pace-vs-close-date calculation in
+// computeDealStatus below, which is now the primary status. "Stalled" (no task activity
+// in 7 days) was dropped from here -- computeDealStatus is a strictly better version of
+// what it was trying to capture.
 function riskFlags(deal) {
   const r = deal.risk;
   if (!r) return [];
   const flags = [];
   if (r.goingCold) flags.push({ key: "going_cold", label: "Going Cold", severity: "cold", reason: `No prospect activity in ${r.daysSinceVisit} day${r.daysSinceVisit === 1 ? "" : "s"}` });
-  if (r.stalled) flags.push({ key: "stalled", label: "Stalled", severity: "risk", reason: `No task activity in ${r.daysSinceTaskActivity} day${r.daysSinceTaskActivity === 1 ? "" : "s"}` });
   if (r.buyerDisengaged) flags.push({ key: "buyer_disengaged", label: "Buyer Disengaged", severity: "risk", reason: `${r.disengagedBuyerName}, your decision-maker, hasn't viewed any documents yet` });
   return flags;
 }
 // Hardcoded (not referencing P) since P isn't defined yet at this point in the file --
 // "on" mirrors P.green/alpine, the other two are the mockup's own risk/cold dot colors.
 const RISK_DOT_COLOR = { cold: "#8A6B63", risk: "#E0A94C", on: "#2C6E63" };
+
+// Primary "On Track"/"Watch"/"At Risk" status -- a rules-based comparison of the deal's
+// actual Action Plan progress against how much of its own timeline (creation to close
+// date) has elapsed. One source of truth for both the header pill and the Analytics Deal
+// Health card headline, so they can never disagree.
+//
+// Expected-stage-by-elapsed-time table is Mark's own, for the 5-stage (with Trial
+// Sessions) case. The 4-stage case (no Trial Sessions, so no distinct stage to spread the
+// middle bands across) is an extrapolation, not explicitly specified -- merges the 50-75%
+// and 75-90% bands into one, flagged here for review rather than silently guessed.
+const STAGE_BENCHMARKS_TRIAL = [{maxElapsed:25,stage:0},{maxElapsed:50,stage:1},{maxElapsed:75,stage:2},{maxElapsed:90,stage:3},{maxElapsed:Infinity,stage:4}];
+const STAGE_BENCHMARKS_NO_TRIAL = [{maxElapsed:25,stage:0},{maxElapsed:50,stage:1},{maxElapsed:90,stage:2},{maxElapsed:Infinity,stage:3}];
+function computeDealStatus(deal) {
+  if (!deal.closeDate || !deal.createdAt) return { status: "unknown", label: "No close date set" };
+  const created = new Date(deal.createdAt).getTime();
+  const close = new Date(deal.closeDate).getTime();
+  const totalMs = close - created;
+  const elapsedPct = totalMs <= 0 ? 100 : Math.max(0, Math.min(100, ((Date.now() - created) / totalMs) * 100));
+
+  const benchmarks = deal.includeTrialSessions ? STAGE_BENCHMARKS_TRIAL : STAGE_BENCHMARKS_NO_TRIAL;
+  const expectedStage = benchmarks.find(b => elapsedPct < b.maxElapsed).stage;
+
+  // Actual current stage -- same per-step scoring ProcessTimeline already uses (the
+  // furthest-along stage that isn't still pending), floored at 0: a brand-new deal with
+  // nothing touched yet counts as "at Alignment," not "behind" it.
+  const phases = deal.includeTrialSessions ? PHASES_ALL : PHASES_NO_TRIAL;
+  const items = deal.mapItems.filter(t => phases.includes(t.phase));
+  const phaseStatuses = phases.map(phase => {
+    const phTasks = items.filter(t => t.phase === phase);
+    if (phTasks.length === 0) return "pending";
+    return phTasks.every(t => t.status === "complete") ? "complete" : "active";
+  });
+  let actualStage = 0;
+  phaseStatuses.forEach((st, i) => { if (st !== "pending") actualStage = i; });
+
+  const diff = actualStage - expectedStage;
+  const status = diff >= 0 ? "on-track" : diff === -1 ? "watch" : "at-risk";
+  const label = status === "on-track" ? "On Track" : status === "watch" ? "Watch" : "At Risk";
+  return { status, label, expectedStage, actualStage, elapsedPct: Math.round(elapsedPct) };
+}
+// Real engagement score, derived from the exact same fields Analytics' Room Visits/
+// Interactions/Total Time cards already display (deal.activityLog, deal.content) plus
+// deal.risk.daysSinceVisit -- the same precise value already computed server-side for
+// the risk-signal system -- so the header number and Analytics can never drift into two
+// different calculations. Weights are a first draft, explicitly tunable; not written
+// back to the stored (always-50, never-updated) deals.engagement_score column.
+function computeEngagementScore(deal) {
+  const visitCount = (deal.activityLog||[]).reduce((a,d)=>a+d.entries.length,0);
+  const daysSinceVisit = deal.risk?.daysSinceVisit;
+  const recencyPts = daysSinceVisit==null ? 0 : 40 - Math.min(40, (Math.max(0,daysSinceVisit-3)/11)*40);
+  const frequencyPts = Math.min(30, visitCount*10);
+  const docsWithViews = (deal.content||[]).filter(c=>c.views>0).length;
+  const totalDocs = (deal.content||[]).length;
+  const breadthPts = totalDocs ? (docsWithViews/totalDocs)*30 : 0;
+  return Math.round(Math.max(0, Math.min(100, recencyPts+frequencyPts+breadthPts)));
+}
 
 const API = "/api/ai-coach";
 const callClaude = async (sys, usr, max = 1400) => {
@@ -940,6 +1004,32 @@ const DeleteDealModal = ({deal,onConfirm,onClose}) => {
   </div>);
 };
 
+// Company name/deal title/value/close date could only ever be set once, at creation --
+// no edit path existed afterward, even though value and close date in particular change
+// constantly as a real deal progresses.
+const EditDealModal = ({deal,onSave,onClose}) => {
+  const [draft,setDraft]=useState({company:deal.company||"",title:deal.title||"",value:(deal.value||"").replace(/[^0-9.]/g,""),closeDate:deal.closeDate||""});
+  const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
+  return (<div style={{position:"fixed",inset:0,background:"rgba(27,31,35,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
+    <div style={{background:P.surface,borderRadius:16,width:440,padding:"24px",boxShadow:"0 24px 64px rgba(0,0,0,0.16)"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:18}}>
+        <span className="headline" style={{fontSize:18,color:P.text}}>Edit Deal</span>
+        <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,color:P.textMute,cursor:"pointer"}}>×</button>
+      </div>
+      <div style={{marginBottom:12}}><label style={lbl0}>Company Name</label><input value={draft.company} onChange={e=>setDraft(d=>({...d,company:e.target.value}))} style={inp}/></div>
+      <div style={{marginBottom:12}}><label style={lbl0}>Deal Title</label><input value={draft.title} onChange={e=>setDraft(d=>({...d,title:e.target.value}))} style={inp}/></div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:18}}>
+        <div><label style={lbl0}>Value</label><input value={draft.value} onChange={e=>setDraft(d=>({...d,value:e.target.value}))} style={inp}/></div>
+        <div><label style={lbl0}>Close Date</label><input type="date" value={draft.closeDate} onChange={e=>setDraft(d=>({...d,closeDate:e.target.value}))} style={inp}/></div>
+      </div>
+      <div style={{display:"flex",gap:10}}>
+        <button onClick={()=>{if(!draft.company.trim())return;onSave(draft);}} style={{flex:1,padding:"11px 20px",background:P.accent,border:"none",borderRadius:7,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>Save Changes</button>
+        <button onClick={onClose} style={{padding:"11px 18px",background:"none",border:`1px solid ${P.border}`,borderRadius:7,color:P.textSec,fontSize:13,cursor:"pointer"}}>Cancel</button>
+      </div>
+    </div>
+  </div>);
+};
+
 // Add (editing=null) and edit (editing=existing stakeholder) share this one modal, same
 // pattern as DealCreator/SettingsModal/ShareModal. reportsTo excludes the stakeholder
 // itself from the options list -- a stakeholder can't report to themselves.
@@ -1038,6 +1128,7 @@ function DealRoom({prospectShareSlug}) {
   const [showCreator,setShowCreator]=useState(false);
   const [showShare,setShowShare]=useState(false);
   const [showDeleteDeal,setShowDeleteDeal]=useState(false);
+  const [showEditDeal,setShowEditDeal]=useState(false);
   const [showAddTask,setShowAddTask]=useState(null); // null, or the phase currently showing its Add Task form
   const [editingTask,setEditingTask]=useState(null); // null, or the task currently open in TaskModal
   // Which single Executive Summary section (if any) is being edited -- "problem" |
@@ -1168,7 +1259,7 @@ function DealRoom({prospectShareSlug}) {
         contributors:d.contributorIds.map(id=>{
           const p=profileById[id];
           const name=p?.full_name||p?.email||"";
-          return {id,name:name||"Unknown",initials:initialsOf(name)||"?"};
+          return {id,name:name||"Unknown",initials:initialsOf(name)||"?",count:d.contributorCounts[id]||1};
         }),
         orgName,
         repProfile:(()=>{
@@ -1312,6 +1403,19 @@ function DealRoom({prospectShareSlug}) {
     });
     setShowDeleteDeal(false);
     flash("Deal room deleted");
+  };
+
+  const updateDealInfo=async(draft)=>{
+    const logo=draft.company.slice(0,2).toUpperCase();
+    const {error}=await sb.from("deals").update({
+      company_name:draft.company,title:draft.title||null,
+      value_amount:parseFloat(draft.value)||null,close_date:draft.closeDate||null,
+      logo_initials:logo,
+    }).eq("id",deal.id);
+    if(error){flash("Couldn't save changes");return;}
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,company:draft.company,title:draft.title,value:fmtCurrency(parseFloat(draft.value)||0),closeDate:draft.closeDate||null,logo}));
+    setShowEditDeal(false);
+    flash("Deal updated");
   };
 
   // One row = one deal, per Mark's explicit scope call: bulk-onboarding an existing
@@ -1725,7 +1829,12 @@ select option{background:#fff}
       </div>
       <div style={{flex:1,overflowY:"auto"}}>
         <div className="mono" style={{fontSize:10.5,letterSpacing:"0.08em",textTransform:"uppercase",color:"rgba(255,255,255,0.35)",marginBottom:12,padding:"0 6px"}}>Active Deals</div>
-        {deals.map(d=>{const dp=Math.round(d.mapItems.filter(t=>t.status==="complete").length/d.mapItems.length*100);const isA=d.id===activeId;const dFlags=riskFlags(d);const dotColor=RISK_DOT_COLOR[dFlags[0]?.severity||"on"];return(
+        {deals.map(d=>{
+          // A deal with zero Action Plan tasks divided by zero here -- NaN% is an
+          // invisible, zero-width bar regardless of selection, which read as "the
+          // highlight is broken" for whichever deal happened to have no tasks yet.
+          const dp=d.mapItems.length?Math.round(d.mapItems.filter(t=>t.status==="complete").length/d.mapItems.length*100):0;
+          const isA=d.id===activeId;const dFlags=riskFlags(d);const dotColor=RISK_DOT_COLOR[dFlags[0]?.severity||"on"];return(
           <div key={d.id} className="hd" onClick={()=>{setActiveId(d.id);setAiOpen(false);setAiText("");setTab(viewMode==="prospect"?"welcome":"map");}} style={{padding:"10px 8px",borderRadius:8,background:isA?"rgba(255,255,255,0.07)":"transparent",marginBottom:2,transition:"all .12s"}}>
             <div style={{display:"flex",alignItems:"center",gap:8}}>
               {d.risk&&<div title={dFlags[0]?.label||"On track"} style={{width:7,height:7,borderRadius:"50%",background:dotColor,flexShrink:0}}/>}
@@ -1747,6 +1856,7 @@ select option{background:#fff}
     {showSettings&&<SettingsModal orgId={orgId} myUserId={session?.user?.id} myRole={myRole} onClose={()=>setShowSettings(false)}/>}
     {showShare&&<ShareModal deal={deal} onClose={()=>setShowShare(false)}/>}
     {showDeleteDeal&&<DeleteDealModal deal={deal} onClose={()=>setShowDeleteDeal(false)} onConfirm={()=>deleteDeal(deal.id)}/>}
+    {showEditDeal&&<EditDealModal deal={deal} onClose={()=>setShowEditDeal(false)} onSave={updateDealInfo}/>}
 
     {/* MAIN */}
     <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
@@ -1759,32 +1869,51 @@ select option{background:#fff}
               <span className="headline" style={{fontSize:18,color:P.text}}>{deal.company}</span>
               <span style={{fontSize:12,color:P.textMute}}>·</span>
               <span style={{fontSize:13,color:P.textSec,fontWeight:500}}>{deal.title}</span>
-              {viewMode==="prospect"&&<span style={{padding:"2px 8px",background:P.greenBg,border:`1px solid ${P.greenBorder}`,borderRadius:20,fontSize:10,fontWeight:700,color:P.green}}>PROSPECT VIEW</span>}
+              {viewMode==="rep"&&<button onClick={()=>setShowEditDeal(true)} title="Edit Deal" style={{background:"none",border:"none",color:P.textMute,fontSize:12,cursor:"pointer",padding:2}}>✎</button>}
+              {/* Only a rep's own preview toggle, never a real prospect (prospectShareSlug
+                  is truthy only on the real /d/{slug} route) -- a real buyer should never
+                  see a badge that reads like an internal reminder. */}
+              {!prospectShareSlug&&viewMode==="prospect"&&<span style={{padding:"2px 8px",background:P.greenBg,border:`1px solid ${P.greenBorder}`,borderRadius:20,fontSize:10,fontWeight:700,color:P.green}}>PROSPECT VIEW</span>}
             </div>
             <div style={{display:"flex",gap:14,marginTop:3}}>{[deal.industry,deal.value,deal.closeDate?`Close ${deal.closeDate}`:null,deal.contact].filter(Boolean).map((v,i)=><span key={i} style={{fontSize:11,color:P.textMute}}>{v}</span>)}</div>
           </div>
         </div>
         <div style={{display:"flex",gap:14,alignItems:"center"}}>
+          {/* "Contributors" -- everyone whose created_by shows up anywhere on this deal
+              (the deal itself, or any stakeholder/task/document under it), not
+              stakeholders. Tooltip says what they actually did, not just their name, so
+              it's self-evident on hover without a click-through to a tab that wouldn't
+              quite fit (contributors aren't necessarily stakeholders). */}
           {(deal.contributors||[]).length>0&&<div style={{display:"flex"}}>
             {deal.contributors.slice(0,3).map((c,i)=>(
-              <div key={c.id} title={c.name} style={{width:30,height:30,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11.5,fontWeight:700,color:"#fff",border:`2px solid ${P.surface}`,marginLeft:i===0?0:-9,background:[P.accent,P.green,P.ink,"#8A9099"][i%4]}} className="headline">{c.initials}</div>
+              <div key={c.id} title={`${c.name} — touched ${c.count} item${c.count===1?"":"s"} on this deal`} style={{width:30,height:30,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11.5,fontWeight:700,color:"#fff",border:`2px solid ${P.surface}`,marginLeft:i===0?0:-9,background:[P.accent,P.green,P.ink,"#8A9099"][i%4]}} className="headline">{c.initials}</div>
             ))}
-            {deal.contributors.length>3&&<div style={{width:30,height:30,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#fff",border:`2px solid ${P.surface}`,marginLeft:-9,background:"#8A9099"}}>+{deal.contributors.length-3}</div>}
+            {deal.contributors.length>3&&<div title={deal.contributors.slice(3).map(c=>c.name).join(", ")} style={{width:30,height:30,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#fff",border:`2px solid ${P.surface}`,marginLeft:-9,background:"#8A9099"}}>+{deal.contributors.length-3}</div>}
           </div>}
-          {deal.risk&&(()=>{const dFlags=riskFlags(deal);const top=dFlags[0];const dotColor=RISK_DOT_COLOR[top?.severity||"on"];return(
-            <div title={dFlags.map(f=>f.reason).join(" · ")||undefined} style={{display:"inline-flex",alignItems:"center",gap:6,background:top?P.amberBg:P.greenBg,color:top?P.amber:P.green,fontSize:12.5,fontWeight:700,padding:"6px 13px 6px 9px",borderRadius:100}}>
-              <span style={{width:6,height:6,borderRadius:"50%",background:dotColor}}/>{top?top.label:"On Track"}
+          {/* Primary status: pace-vs-close-date (computeDealStatus), not the old
+              risk-signal pill -- same calculation feeds the Analytics Deal Health
+              headline below, so the two can never disagree. */}
+          {(()=>{const ds=computeDealStatus(deal);const c={"on-track":{text:P.green,bg:P.greenBg,dot:P.green},watch:{text:P.amber,bg:P.amberBg,dot:RISK_DOT_COLOR.risk},"at-risk":{text:P.red,bg:P.redBg,dot:P.red},unknown:{text:P.textMute,bg:P.bg,dot:P.textMute}}[ds.status];return(
+            <div title={ds.status!=="unknown"?`${ds.elapsedPct}% of the way to close date`:undefined} style={{display:"inline-flex",alignItems:"center",gap:6,background:c.bg,color:c.text,fontSize:12.5,fontWeight:700,padding:"6px 13px 6px 9px",borderRadius:100}}>
+              <span style={{width:6,height:6,borderRadius:"50%",background:c.dot}}/>{ds.label}
             </div>
           );})()}
+          {/* Real score (computeEngagementScore) -- the stored deals.engagement_score
+              column is always the static default of 50, never updated by anything, so
+              it's no longer read here at all. */}
+          {(()=>{const eng=computeEngagementScore(deal);return(
           <div style={{display:"flex",alignItems:"center",gap:6,padding:"5px 12px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:20}}>
             <span className="mono" style={{fontSize:10,color:P.textMute,fontWeight:600}}>ENGAGEMENT</span>
-            <div style={{width:50,height:4,background:P.border,borderRadius:99,overflow:"hidden"}}><div style={{width:`${deal.engagement}%`,height:"100%",background:deal.engagement>60?P.green:P.amber,borderRadius:99}}/></div>
-            <span style={{fontSize:11,fontWeight:800,color:deal.engagement>60?P.green:P.amber}}>{deal.engagement}%</span>
+            <div style={{width:50,height:4,background:P.border,borderRadius:99,overflow:"hidden"}}><div style={{width:`${eng}%`,height:"100%",background:eng>60?P.green:P.amber,borderRadius:99}}/></div>
+            <span style={{fontSize:11,fontWeight:800,color:eng>60?P.green:P.amber}}>{eng}%</span>
           </div>
+          );})()}
           {viewMode==="rep"&&<>
             <button onClick={()=>setShowShare(true)} className="hv" style={{padding:"7px 14px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:11,fontWeight:700,cursor:"pointer",textTransform:"uppercase",letterSpacing:"0.04em"}}>↗ Share</button>
-            <button onClick={()=>runAI("brief")} className="hv" style={{padding:"7px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer",textTransform:"uppercase",letterSpacing:"0.04em"}}>✦ Deal Brief</button>
-            <button onClick={()=>{setAiOpen(!aiOpen);setAiText("");}} className="hv" style={{padding:"7px 14px",background:aiOpen?P.accentLight:P.bg,border:`1px solid ${aiOpen?P.accentMid:P.border}`,borderRadius:6,color:aiOpen?P.accent:P.textSec,fontSize:11,fontWeight:700,cursor:"pointer",textTransform:"uppercase",letterSpacing:"0.04em"}}>AI Coach</button>
+            {/* Was two buttons opening the same panel (Deal Brief auto-generated content,
+                AI Coach just toggled it open blank) -- one button now, keeping Deal
+                Brief's behavior under the more accurate "AI Coach" label. */}
+            <button onClick={()=>runAI("brief")} className="hv" style={{padding:"7px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer",textTransform:"uppercase",letterSpacing:"0.04em"}}>✦ AI Coach</button>
             <button onClick={()=>setShowDeleteDeal(true)} title="Delete Deal Room" style={{padding:"7px 10px",background:"none",border:"none",color:P.textMute,fontSize:11,fontWeight:700,cursor:"pointer"}}>🗑</button>
           </>}
         </div>
@@ -2169,14 +2298,19 @@ select option{background:#fff}
                   <div style={{fontSize:11,color:P.textMute}}>{sub}</div>
                 </div>))}
             </div>
-            {deal.risk&&<div style={{marginBottom:24}}>
+            <div style={{marginBottom:24}}>
               <div style={{fontSize:13,fontWeight:700,color:P.text,marginBottom:12}}>Deal Health</div>
-              {riskFlags(deal).length===0?
-                <div style={{display:"flex",alignItems:"center",gap:10,background:P.greenBg,border:`1px solid ${P.greenBorder}`,borderRadius:10,padding:"14px 18px"}}>
-                  <span style={{width:8,height:8,borderRadius:"50%",background:P.green,flexShrink:0}}/>
-                  <span style={{fontSize:13,fontWeight:600,color:P.green}}>On track — no risk signals right now</span>
+              {/* Headline is the exact same computeDealStatus() call the header pill
+                  uses -- one source of truth, they can never disagree. Secondary flags
+                  (buyer-side engagement, a genuinely different axis from pace-vs-close-
+                  date) list below when risk-signal data has loaded. */}
+              {(()=>{const ds=computeDealStatus(deal);const c={"on-track":{text:P.green,bg:P.greenBg,border:P.greenBorder},watch:{text:P.amber,bg:P.amberBg,border:P.amberBorder},"at-risk":{text:P.red,bg:P.redBg,border:P.redBorder},unknown:{text:P.textMute,bg:P.bg,border:P.border}}[ds.status];return(
+                <div style={{display:"flex",alignItems:"center",gap:10,background:c.bg,border:`1px solid ${c.border}`,borderRadius:10,padding:"14px 18px"}}>
+                  <span style={{width:8,height:8,borderRadius:"50%",background:c.text,flexShrink:0}}/>
+                  <span style={{fontSize:13,fontWeight:600,color:c.text}}>{ds.label}{ds.status!=="unknown"?` — ${ds.elapsedPct}% of the way to close date`:""}</span>
                 </div>
-              :<div style={{display:"grid",gap:8}}>
+              );})()}
+              {deal.risk&&riskFlags(deal).length>0&&<div style={{display:"grid",gap:8,marginTop:8}}>
                 {riskFlags(deal).map(f=>(
                   <div key={f.key} style={{display:"flex",alignItems:"center",gap:12,background:P.surface,border:`1px solid ${P.border}`,borderRadius:10,padding:"14px 18px"}}>
                     <span style={{width:8,height:8,borderRadius:"50%",background:RISK_DOT_COLOR[f.severity],flexShrink:0}}/>
@@ -2184,7 +2318,7 @@ select option{background:#fff}
                   </div>
                 ))}
               </div>}
-            </div>}
+            </div>
             <div style={{fontSize:13,fontWeight:700,color:P.text,marginBottom:12}}>Activity Log</div>
             {deal.activityLog.map(day=>(
               <div key={day.date} style={{marginBottom:20}}>
