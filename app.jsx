@@ -857,6 +857,39 @@ const StakeholderModal = ({editing,allStakeholders,onSave,onClose}) => {
   </div>);
 };
 
+// Opened by clicking a task's ring in Action Plan -- replaces the old standalone "×"
+// delete button, which now lives as an action inside this modal instead.
+const TaskModal = ({task,phases,onSave,onDelete,onClose}) => {
+  const [draft,setDraft]=useState({task:task.task,phase:task.phase,owner:task.owner||"",buyerOwner:task.buyerOwner||"",dueDate:task.dueDate||"",status:task.status,notes:task.notes||"",approvalRequired:!!task.approvalRequired});
+  const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
+  const lbl={fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6,display:"block"};
+  return (<div style={{position:"fixed",inset:0,background:"rgba(27,31,35,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
+    <div style={{background:P.surface,borderRadius:16,width:480,maxHeight:"85vh",overflowY:"auto",padding:24,boxShadow:"0 24px 64px rgba(0,0,0,0.16)"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:18}}>
+        <span className="headline" style={{fontSize:18,color:P.text}}>Edit Task</span>
+        <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,color:P.textMute,cursor:"pointer"}}>×</button>
+      </div>
+      <div style={{marginBottom:12}}><label style={lbl}>Task Name</label><input value={draft.task} onChange={e=>setDraft(d=>({...d,task:e.target.value}))} style={inp}/></div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+        <div><label style={lbl}>Phase</label><select value={draft.phase} onChange={e=>setDraft(d=>({...d,phase:e.target.value}))} style={inp}>{phases.map(ph=><option key={ph}>{ph}</option>)}</select></div>
+        <div><label style={lbl}>Status</label><select value={draft.status} onChange={e=>setDraft(d=>({...d,status:e.target.value}))} style={inp}><option value="complete">Complete</option><option value="in-progress">In Progress</option><option value="pending">Pending</option></select></div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+        <div><label style={lbl}>Seller</label><input value={draft.owner} onChange={e=>setDraft(d=>({...d,owner:e.target.value}))} style={inp}/></div>
+        <div><label style={lbl}>Buyer Owner</label><input value={draft.buyerOwner} onChange={e=>setDraft(d=>({...d,buyerOwner:e.target.value}))} style={inp}/></div>
+      </div>
+      <div style={{marginBottom:12}}><label style={lbl}>Due Date</label><input type="date" value={draft.dueDate} onChange={e=>setDraft(d=>({...d,dueDate:e.target.value}))} style={inp}/></div>
+      <div style={{marginBottom:14}}><label style={lbl}>Notes</label><textarea value={draft.notes} onChange={e=>setDraft(d=>({...d,notes:e.target.value}))} style={{...inp,height:60,resize:"vertical"}}/></div>
+      <div style={{marginBottom:20}}><label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:P.textSec,cursor:"pointer"}}><input type="checkbox" checked={draft.approvalRequired} onChange={e=>setDraft(d=>({...d,approvalRequired:e.target.checked}))}/>Approval Required</label></div>
+      <div style={{display:"flex",gap:10}}>
+        <button onClick={()=>{if(!draft.task.trim())return;onSave(draft);}} style={{flex:1,padding:"11px 20px",background:P.accent,border:"none",borderRadius:7,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>Save Changes</button>
+        <button onClick={onClose} style={{padding:"11px 18px",background:"none",border:`1px solid ${P.border}`,borderRadius:7,color:P.textSec,fontSize:13,cursor:"pointer"}}>Cancel</button>
+        <button onClick={onDelete} style={{padding:"11px 18px",background:"none",border:"none",color:P.red,fontSize:13,fontWeight:600,cursor:"pointer"}}>Delete</button>
+      </div>
+    </div>
+  </div>);
+};
+
 function DealRoom({prospectShareSlug}) {
   const [session,setSession]=useState(undefined); // undefined=checking, null=signed out, object=signed in
   const [needsOrgSetup,setNeedsOrgSetup]=useState(false);
@@ -882,6 +915,7 @@ function DealRoom({prospectShareSlug}) {
   const [showCreator,setShowCreator]=useState(false);
   const [showShare,setShowShare]=useState(false);
   const [showAddTask,setShowAddTask]=useState(null); // null, or the phase currently showing its Add Task form
+  const [editingTask,setEditingTask]=useState(null); // null, or the task currently open in TaskModal
   // Which single Executive Summary section (if any) is being edited -- "problem" |
   // "challenges" | "solutions" | null -- so editing one section never puts the others
   // into edit mode too. summarySectionDraft holds that one section's in-progress value
@@ -1186,6 +1220,22 @@ function DealRoom({prospectShareSlug}) {
     setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,mapItems:d.mapItems.filter(t=>t.id!==taskId)}));
   };
 
+  // Full-field edit from TaskModal (opened via the task ring) -- mirrors
+  // updateTaskStatus's shape but covers every editable field, not just status.
+  const updateTask=async(taskId,draft)=>{
+    const {error}=await sb.from("deal_tasks").update({
+      task:draft.task,phase:draft.phase,owner_name:draft.owner||null,buyer_owner_label:draft.buyerOwner||null,
+      due_date:draft.dueDate||null,status:draft.status,notes:draft.notes||null,approval_required:!!draft.approvalRequired,
+    }).eq("id",taskId);
+    if(error){flash("Couldn't update task");return;}
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,mapItems:d.mapItems.map(t=>t.id!==taskId?t:{
+      ...t,task:draft.task,phase:draft.phase,owner:draft.owner,buyerOwner:draft.buyerOwner,
+      dueDate:draft.dueDate,status:draft.status,notes:draft.notes,approvalRequired:draft.approvalRequired,
+    })}));
+    setEditingTask(null);
+    flash("Task updated");
+  };
+
   const addTask=async(draft)=>{
     const {data,error}=await sb.from("deal_tasks").insert({
       deal_id:deal.id,
@@ -1216,6 +1266,34 @@ function DealRoom({prospectShareSlug}) {
     if(error){flash("Couldn't save changes");return;}
     setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,execSummary:newExecSummary}));
     flash("Executive Summary updated");
+  };
+
+  // Simple, clean document: header, then Problem/Key Challenges/Solutions with manual
+  // line-wrapping and page breaks -- no library beyond jsPDF itself needed for content
+  // this straightforward.
+  const downloadExecSummaryPdf=()=>{
+    const {jsPDF}=window.jspdf;
+    const doc=new jsPDF();
+    const pageWidth=doc.internal.pageSize.getWidth();
+    const pageHeight=doc.internal.pageSize.getHeight();
+    const margin=20;
+    const maxWidth=pageWidth-margin*2;
+    let y=margin;
+    const ensureRoom=lines=>{if(y+lines*6>pageHeight-margin){doc.addPage();y=margin;}};
+    const addHeading=text=>{ensureRoom(10);doc.setFont(undefined,"bold");doc.setFontSize(14);doc.text(text,margin,y);y+=10;doc.setFont(undefined,"normal");doc.setFontSize(11);};
+    const addParagraph=text=>{const lines=doc.splitTextToSize(text,maxWidth);ensureRoom(lines.length);doc.text(lines,margin,y);y+=lines.length*6+6;};
+    const addBullets=items=>{items.forEach(item=>{const lines=doc.splitTextToSize(`•  ${item}`,maxWidth);ensureRoom(lines.length);doc.text(lines,margin,y);y+=lines.length*6+2;});y+=6;};
+
+    doc.setFont(undefined,"bold");doc.setFontSize(18);doc.text(deal.company,margin,y);y+=8;
+    doc.setFont(undefined,"normal");doc.setFontSize(11);doc.setTextColor(107,113,120);doc.text(`Executive Summary${deal.title?` — ${deal.title}`:""}`,margin,y);y+=14;
+    doc.setTextColor(37,42,46);
+
+    addHeading("The Problem");
+    (deal.execSummary?.problem||"").split("\n\n").forEach(addParagraph);
+    if((deal.execSummary?.challenges||[]).length){addHeading("Key Challenges");addBullets(deal.execSummary.challenges);}
+    if((deal.execSummary?.solutions||[]).length){addHeading("Solutions");addBullets(deal.execSummary.solutions);}
+
+    doc.save(`${deal.company.replace(/[^a-zA-Z0-9]+/g,"-")}-executive-summary.pdf`);
   };
   const updateDiscovery=async(newDiscovery)=>{
     const {error}=await sb.from("deals").update({discovery:newDiscovery}).eq("id",deal.id);
@@ -1542,7 +1620,10 @@ select option{background:#fff}
           {tab==="summary"&&<div style={{maxWidth:820}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
               <div className="headline" style={{fontSize:22,color:P.text}}>Executive Summary</div>
-              {viewMode==="rep"&&<button onClick={()=>runAI("bizcase")} style={{padding:"8px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>✦ AI Refresh</button>}
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={downloadExecSummaryPdf} style={{padding:"8px 16px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer"}}>↓ Download PDF</button>
+                {viewMode==="rep"&&<button onClick={()=>runAI("bizcase")} style={{padding:"8px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>✦ AI Refresh</button>}
+              </div>
             </div>
             {[
               {key:"problem",title:"The Problem",type:"text"},
@@ -1580,14 +1661,16 @@ select option{background:#fff}
                   <span style={{fontSize:12.5,color:P.textMute}}>{items.filter(t=>t.status==="complete").length} of {items.length} complete</span>
                 </div>
                 <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:12,overflow:"hidden",boxShadow:"0 1px 2px rgba(27,31,35,0.05), 0 12px 32px -12px rgba(27,31,35,0.16)"}}>
-                  {items.length>0&&<div style={{display:"grid",gridTemplateColumns:`1fr 100px 150px 100px 110px${viewMode==="rep"?" 26px":""}`,padding:"7px 16px",background:P.bg,borderBottom:`1px solid ${P.border}`}}>
-                    {["Task","Seller","Buyer Owner","Due Date","Status"].concat(viewMode==="rep"?[""]:[]).map(h=><div key={h} style={{fontSize:10,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.07em"}}>{h}</div>)}
+                  {items.length>0&&<div style={{display:"grid",gridTemplateColumns:"1fr 100px 150px 100px 110px",padding:"7px 16px",background:P.bg,borderBottom:`1px solid ${P.border}`}}>
+                    {["Task","Seller","Buyer Owner","Due Date","Status"].map(h=><div key={h} style={{fontSize:10,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.07em"}}>{h}</div>)}
                   </div>}
                   {items.length===0&&<div style={{padding:"16px",fontSize:12.5,color:P.textMute,fontStyle:"italic"}}>No tasks yet in this phase</div>}
                   {items.map((task,i)=>{const sc=STATUS_CFG[task.status];return(
-                    <div key={task.id} className="hr" style={{display:"grid",gridTemplateColumns:`1fr 100px 150px 100px 110px${viewMode==="rep"?" 26px":""}`,padding:"11px 16px",borderBottom:i<items.length-1?`1px solid ${P.bg}`:"none",alignItems:"center"}}>
+                    <div key={task.id} className="hr" style={{display:"grid",gridTemplateColumns:"1fr 100px 150px 100px 110px",padding:"11px 16px",borderBottom:i<items.length-1?`1px solid ${P.bg}`:"none",alignItems:"center"}}>
                       <div style={{display:"flex",alignItems:"flex-start",gap:10}}>
-                        <div style={{width:20,height:20,borderRadius:"50%",border:task.status==="complete"?"none":`1.5px solid ${P.border}`,background:task.status==="complete"?P.ink:P.surface,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",marginTop:1}}>{task.status==="complete"&&<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1.5 5l2.3 2.3L8.5 2.5" stroke="#fff" strokeWidth="1.6" strokeLinecap="round"/></svg>}</div>
+                        {viewMode==="rep"?
+                          <button onClick={()=>setEditingTask(task)} title="Edit task" style={{width:20,height:20,padding:0,borderRadius:"50%",border:task.status==="complete"?"none":`1.5px solid ${P.border}`,background:task.status==="complete"?P.ink:P.surface,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",marginTop:1,cursor:"pointer"}}>{task.status==="complete"&&<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1.5 5l2.3 2.3L8.5 2.5" stroke="#fff" strokeWidth="1.6" strokeLinecap="round"/></svg>}</button>
+                        :<div style={{width:20,height:20,borderRadius:"50%",border:task.status==="complete"?"none":`1.5px solid ${P.border}`,background:task.status==="complete"?P.ink:P.surface,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",marginTop:1}}>{task.status==="complete"&&<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1.5 5l2.3 2.3L8.5 2.5" stroke="#fff" strokeWidth="1.6" strokeLinecap="round"/></svg>}</div>}
                         <div>
                           <div style={{fontSize:13,color:task.status==="complete"?P.textMute:P.text,textDecoration:task.status==="complete"?"line-through":"none",fontWeight:500}}>{task.task}</div>
                           {task.notes&&<div style={{fontSize:11,color:P.textMute,marginTop:2,fontStyle:"italic"}}>{task.notes}</div>}
@@ -1599,7 +1682,6 @@ select option{background:#fff}
                       <div style={{fontSize:11,color:P.textMute}}>{task.dueDate}</div>
                       {viewMode==="rep"?<select value={task.status} onChange={e=>updateTaskStatus(task.id,e.target.value)} style={{background:sc.bg,border:`1px solid ${sc.border}`,color:sc.text,borderRadius:5,padding:"4px 6px",fontSize:11,fontWeight:700,cursor:"pointer",width:"100%"}}><option value="complete">Complete</option><option value="in-progress">In Progress</option><option value="pending">Pending</option></select>
                       :<div style={{padding:"3px 8px",borderRadius:4,background:sc.bg,border:`1px solid ${sc.border}`,color:sc.text,fontSize:11,fontWeight:700,textAlign:"center"}}>{sc.label}</div>}
-                      {viewMode==="rep"&&<button onClick={()=>deleteTask(task.id)} style={{background:"none",border:"none",color:P.textMute,cursor:"pointer",fontSize:14}}>×</button>}
                     </div>);})}
                   {viewMode==="rep"&&(showAddTask===phase?<div style={{padding:16,borderTop:items.length>0?`1px solid ${P.bg}`:"none"}}>
                     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
@@ -1618,6 +1700,13 @@ select option{background:#fff}
                   </div>:<button onClick={()=>{setNewTask(t=>({...t,phase}));setShowAddTask(phase);}} style={{width:"100%",padding:10,background:"none",border:"none",borderTop:items.length>0?`1px solid ${P.bg}`:"none",color:P.textMute,fontSize:12,cursor:"pointer"}} onMouseOver={e=>e.currentTarget.style.color=P.accent} onMouseOut={e=>e.currentTarget.style.color=P.textMute}>+ Add Task</button>)}
                 </div>
               </div>;})}
+            {editingTask&&<TaskModal
+              task={editingTask}
+              phases={phases}
+              onClose={()=>setEditingTask(null)}
+              onSave={draft=>updateTask(editingTask.id,draft)}
+              onDelete={()=>{deleteTask(editingTask.id);setEditingTask(null);}}
+            />}
           </div>}
 
           {/* DISCOVERY */}
