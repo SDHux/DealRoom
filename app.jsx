@@ -671,10 +671,18 @@ const DealCreator = ({onSave,onImport,onClose}) => {
   </div>);
 };
 
+// Both null until Mark hands over the real policy URLs (Termly, a lawyer template, or
+// hand-written pages) -- while null, the signup checkbox renders these as plain "(pending)"
+// text instead of a dead link, so it's obviously unfinished rather than silently broken.
+// Setting these two constants is the entire cutover once the content exists.
+const TERMS_URL = null;
+const PRIVACY_URL = null;
+
 const AuthGate = () => {
   const [mode,setMode]=useState("signin"); // "signin" | "signup" | "check-email"
   const [email,setEmail]=useState(""); const [password,setPassword]=useState("");
   const [orgName,setOrgName]=useState(""); const [fullName,setFullName]=useState("");
+  const [phone,setPhone]=useState(""); const [termsAccepted,setTermsAccepted]=useState(false);
   const [error,setError]=useState(""); const [loading,setLoading]=useState(false);
 
   const submit=async()=>{
@@ -691,9 +699,13 @@ const AuthGate = () => {
           const {data:joinedOrgId,error:acceptErr}=await sb.rpc("accept_pending_invite");
           if(acceptErr)throw acceptErr;
           if(!joinedOrgId){
-            const {error:rpcErr}=await sb.rpc("create_organization_with_owner",{p_org_name:orgName,p_full_name:fullName||null});
+            const {error:rpcErr}=await sb.rpc("create_organization_with_owner",{p_org_name:orgName,p_full_name:fullName||null,p_phone:phone||null});
             if(rpcErr)throw rpcErr;
           }
+          // Audit record of consent, not a hard server-side gate -- the required checkbox
+          // below (disabling this whole submit button until checked) is the actual
+          // enforcement. Covers both branches above: the profile row now exists either way.
+          await sb.from("profiles").update({terms_accepted_at:new Date().toISOString()}).eq("id",data.user.id);
         }else{
           setMode("check-email");
         }
@@ -723,14 +735,26 @@ const AuthGate = () => {
         <div className="headline" style={{fontSize:24,color:P.text,marginBottom:24}}>{mode==="signup"?"Create your workspace":"Sign in"}</div>
         {mode==="signup"&&<div style={{marginBottom:14}}><label style={lbl}>Organization Name</label>
           <input value={orgName} onChange={e=>setOrgName(e.target.value)} placeholder="Acme Sales Team" style={inp}/></div>}
-        {mode==="signup"&&<div style={{marginBottom:14}}><label style={lbl}>Your Name</label>
+        {mode==="signup"&&<div style={{marginBottom:14}}><label style={lbl}>Full Name</label>
           <input value={fullName} onChange={e=>setFullName(e.target.value)} placeholder="Jane Doe" style={inp}/></div>}
+        {mode==="signup"&&<div style={{marginBottom:14}}><label style={lbl}>Phone Number</label>
+          <input value={phone} onChange={e=>setPhone(e.target.value)} type="tel" placeholder="(555) 123-4567" style={inp}/></div>}
         <div style={{marginBottom:14}}><label style={lbl}>Email</label>
           <input value={email} onChange={e=>setEmail(e.target.value)} type="email" placeholder="you@company.com" style={inp}/></div>
-        <div style={{marginBottom:20}}><label style={lbl}>Password</label>
+        <div style={{marginBottom:mode==="signup"?14:20}}><label style={lbl}>Password</label>
           <input value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} type="password" placeholder="••••••••" style={inp}/>
           {error&&<div style={{fontSize:11,color:P.red,marginTop:6}}>{error}</div>}</div>
-        <button onClick={submit} disabled={loading||!email||!password||(mode==="signup"&&!orgName)} style={{width:"100%",padding:"12px",background:loading||!email||!password?P.border:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:14,fontWeight:700,cursor:loading?"not-allowed":"pointer"}}>{loading?"Please wait…":mode==="signup"?"Create Workspace →":"Sign In →"}</button>
+        {mode==="signup"&&<label style={{display:"flex",gap:8,alignItems:"flex-start",marginBottom:20,fontSize:12,color:P.textSec,lineHeight:1.5,cursor:"pointer"}}>
+          <input type="checkbox" checked={termsAccepted} onChange={e=>setTermsAccepted(e.target.checked)} style={{marginTop:2}}/>
+          <span>I agree to the{" "}
+            {TERMS_URL?<a href={TERMS_URL} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{color:P.accent,fontWeight:600}}>Terms of Service</a>
+            :<span style={{fontStyle:"italic",color:P.textMute}}>Terms of Service (pending)</span>}
+            {" "}and{" "}
+            {PRIVACY_URL?<a href={PRIVACY_URL} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{color:P.accent,fontWeight:600}}>Privacy Policy</a>
+            :<span style={{fontStyle:"italic",color:P.textMute}}>Privacy Policy (pending)</span>}
+          </span>
+        </label>}
+        <button onClick={submit} disabled={loading||!email||!password||(mode==="signup"&&(!orgName||!termsAccepted))} style={{width:"100%",padding:"12px",background:loading||!email||!password?P.border:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:14,fontWeight:700,cursor:loading?"not-allowed":"pointer"}}>{loading?"Please wait…":mode==="signup"?"Create Workspace →":"Sign In →"}</button>
         <div style={{textAlign:"center",marginTop:18,fontSize:12,color:P.textMute}}>
           {mode==="signup"?"Already have an account? ":"New here? "}
           <span onClick={()=>{setMode(mode==="signup"?"signin":"signup");setError("");}} style={{color:P.accent,fontWeight:700,cursor:"pointer"}}>{mode==="signup"?"Sign in":"Create a workspace"}</span>
@@ -784,13 +808,15 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
   const [myProfileData,setMyProfileData]=useState(null);
   const [profileDraft,setProfileDraft]=useState({fullName:"",title:"",phone:"",linkedin:""});
   const [avatarUploading,setAvatarUploading]=useState(false);
+  const [billingLoading,setBillingLoading]=useState(false);
+  const [billingError,setBillingError]=useState("");
 
   const load=async()=>{
     setLoading(true);setError("");
     const [{data:mem,error:memErr},{data:inv,error:invErr},{data:orgRow,error:orgErr},{data:myProf,error:myProfErr}]=await Promise.all([
       sb.from("organization_members").select("id,user_id,role,created_at").eq("org_id",orgId),
       sb.from("org_invitations").select("id,email,role,created_at,expires_at").eq("org_id",orgId).is("accepted_at",null),
-      sb.from("organizations").select("name,logo_url").eq("id",orgId).single(),
+      sb.from("organizations").select("name,logo_url,deal_room_limit,subscription_status,trial_ends_at,current_period_end").eq("id",orgId).single(),
       sb.from("profiles").select("full_name,email,title,phone,linkedin_url,avatar_url").eq("id",myUserId).single(),
     ]);
     if(memErr||invErr||orgErr||myProfErr){setError("Couldn't load settings");setLoading(false);return;}
@@ -861,6 +887,31 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
     setAvatarUploading(false);load();
   };
 
+  // Both hit Netlify functions that forward this token so Postgres RLS (owner-only on
+  // organizations, membership-only on organization_members) does the real authorization --
+  // see create-checkout-session.mts/create-portal-session.mts. Fetched fresh here rather
+  // than threaded in as a prop, same as ProspectLogin's own sb.auth.getSession() calls.
+  const openCheckout=async()=>{
+    setBillingLoading(true);setBillingError("");
+    const {data:{session}}=await sb.auth.getSession();
+    try{
+      const res=await fetch("/api/create-checkout-session",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({orgId,accessToken:session.access_token})});
+      const data=await res.json();
+      if(!res.ok||!data.url){setBillingError(data.error||"Couldn't start checkout");setBillingLoading(false);return;}
+      window.location.href=data.url;
+    }catch{setBillingError("Couldn't start checkout");setBillingLoading(false);}
+  };
+  const openPortal=async()=>{
+    setBillingLoading(true);setBillingError("");
+    const {data:{session}}=await sb.auth.getSession();
+    try{
+      const res=await fetch("/api/create-portal-session",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({orgId,accessToken:session.access_token})});
+      const data=await res.json();
+      if(!res.ok||!data.url){setBillingError(data.error||"Couldn't open billing portal");setBillingLoading(false);return;}
+      window.location.href=data.url;
+    }catch{setBillingError("Couldn't open billing portal");setBillingLoading(false);}
+  };
+
   const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
 
   return (<div style={{position:"fixed",inset:0,background:"rgba(17,24,39,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
@@ -870,7 +921,7 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
         <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,color:P.textMute,cursor:"pointer"}}>×</button>
       </div>
       <div style={{padding:"14px 24px 0",display:"flex",gap:4,borderBottom:`1px solid ${P.border}`}}>
-        {[["team","Team"],["general","General"],["profile","My Profile"]].map(([k,l])=>(
+        {[["team","Team"],["general","General"],["profile","My Profile"],...(myRole==="owner"?[["billing","Billing"]]:[])].map(([k,l])=>(
           <button key={k} onClick={()=>setTab(k)} style={{padding:"8px 14px",background:"none",border:"none",borderBottom:`2px solid ${tab===k?P.accent:"transparent"}`,color:tab===k?P.accent:P.textSec,fontSize:13,fontWeight:tab===k?700:400,cursor:"pointer"}}>{l}</button>
         ))}
       </div>
@@ -952,6 +1003,27 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
           <div style={{marginBottom:20}}><label style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:6}}>LinkedIn URL</label><input value={profileDraft.linkedin} onChange={e=>setProfileDraft(d=>({...d,linkedin:e.target.value}))} style={inp}/></div>
           <div style={{fontSize:11,color:P.textMute,lineHeight:1.6,marginBottom:16}}>This is what your prospects see on the Welcome tab of any deal room you create.</div>
           <button onClick={saveMyProfile} style={{padding:"9px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Save Profile</button>
+        </div>}
+
+        {tab==="billing"&&myRole==="owner"&&<div>
+          <div style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>Plan</div>
+          {(()=>{
+            const status=org?.subscription_status||"trialing";
+            const daysLeft=org?.trial_ends_at?Math.max(0,Math.ceil((new Date(org.trial_ends_at)-new Date())/86400000)):null;
+            const label=status==="active"?"Active subscription"
+              :status==="past_due"?"Payment failed"
+              :status==="trialing"?(daysLeft>0?`Free trial — ${daysLeft} day${daysLeft===1?"":"s"} left`:"Trial ended")
+              :"Trial ended";
+            return (<>
+              <div style={{fontSize:14,fontWeight:700,color:status==="past_due"||(status==="trialing"&&daysLeft===0)?P.red:P.text,marginBottom:4}}>{label}</div>
+              {status==="active"&&org?.current_period_end&&<div style={{fontSize:12,color:P.textMute,marginBottom:16}}>Renews {new Date(org.current_period_end).toLocaleDateString()}</div>}
+              {status!=="active"&&<div style={{fontSize:12,color:P.textMute,marginBottom:16}}>myBivy is a single paid plan, up to {org?.deal_room_limit||25} active deal rooms.</div>}
+            </>);
+          })()}
+          {billingError&&<div style={{fontSize:12,color:P.red,marginBottom:12,padding:"8px 12px",background:P.redBg,border:`1px solid ${P.redBorder}`,borderRadius:6}}>{billingError}</div>}
+          {org?.subscription_status==="active"?
+            <button onClick={openPortal} disabled={billingLoading} style={{padding:"9px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:billingLoading?"not-allowed":"pointer",opacity:billingLoading?0.6:1}}>{billingLoading?"Please wait…":"Manage Billing"}</button>
+          :<button onClick={openCheckout} disabled={billingLoading} style={{padding:"9px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:billingLoading?"not-allowed":"pointer",opacity:billingLoading?0.6:1}}>{billingLoading?"Please wait…":"Upgrade →"}</button>}
         </div>}
         </>}
       </div>
@@ -1124,6 +1196,20 @@ function DealRoom({prospectShareSlug}) {
   const [myRole,setMyRole]=useState(null);
   const [myProfile,setMyProfile]=useState(null); // the logged-in user's own profile -- sidebar identity, not "who created this deal"
   const [dealRoomLimit,setDealRoomLimit]=useState(25); // base-plan cap on active deal rooms (organizations.deal_room_limit)
+  // Billing state -- mirrors org_is_locked (0018) for UX only; the real gate is the
+  // enforce_org_not_locked trigger on deals/stakeholders/deal_tasks. Never checked for
+  // viewMode==="prospect" -- soft lock is rep-side only, prospect share links are unaffected.
+  const [subscriptionStatus,setSubscriptionStatus]=useState("trialing");
+  const [trialEndsAt,setTrialEndsAt]=useState(null);
+  const isLocked=subscriptionStatus==="active"?false:(subscriptionStatus==="trialing"?!(trialEndsAt&&new Date(trialEndsAt)>new Date()):true);
+  // Client-side mirror of the enforce_org_not_locked trigger (0018) -- called at the top of
+  // every create/edit mutation (not deletes, matching the trigger's own scope) so a locked
+  // org gets one clear message instead of a raw Postgres exception surfacing through flash().
+  const guardLocked=()=>{
+    if(!isLocked)return false;
+    flash("Your trial has ended — upgrade to keep editing (Settings → Billing)");
+    return true;
+  };
   const [showSettings,setShowSettings]=useState(false);
   const [loadingDeals,setLoadingDeals]=useState(!prospectShareSlug);
   const [deals,setDeals]=useState([]);
@@ -1244,7 +1330,7 @@ function DealRoom({prospectShareSlug}) {
         // rep-profile source for the Welcome tab's AE card, no extra query needed.
         allContributorIds.length?sb.from("profiles").select("id,email,full_name,avatar_url,title,phone,linkedin_url").in("id",allContributorIds):{data:[]},
         allDealIds.length?sb.from("deal_risk_signals").select("*").in("deal_id",allDealIds):{data:[]},
-        sb.from("organizations").select("name,deal_room_limit").eq("id",mem.org_id).single(),
+        sb.from("organizations").select("name,deal_room_limit,subscription_status,trial_ends_at").eq("id",mem.org_id).single(),
         sb.from("profiles").select("full_name,email,avatar_url,title").eq("id",session.user.id).single(),
       ]);
       if(cancelled)return;
@@ -1256,6 +1342,8 @@ function DealRoom({prospectShareSlug}) {
       const riskByDeal=Object.fromEntries((riskRows||[]).map(r=>[r.deal_id,r]));
       const orgName=orgRow?.name||null;
       setDealRoomLimit(orgRow?.deal_room_limit||25);
+      setSubscriptionStatus(orgRow?.subscription_status||"trialing");
+      setTrialEndsAt(orgRow?.trial_ends_at||null);
       if(myProfileRow){
         const name=myProfileRow.full_name||myProfileRow.email;
         setMyProfile({name,email:myProfileRow.email,photo:myProfileRow.avatar_url,title:myProfileRow.title,initials:initialsOf(name)});
@@ -1409,6 +1497,7 @@ function DealRoom({prospectShareSlug}) {
   };
 
   const createDeal=async(draft)=>{
+    if(guardLocked())return;
     const{ok}=await insertDeal(draft);
     if(!ok){flash("Couldn't create deal room");return;}
     setShowCreator(false);
@@ -1429,6 +1518,7 @@ function DealRoom({prospectShareSlug}) {
   };
 
   const updateDealInfo=async(draft)=>{
+    if(guardLocked())return;
     const logo=draft.company.slice(0,2).toUpperCase();
     const {error}=await sb.from("deals").update({
       company_name:draft.company,title:draft.title||null,
@@ -1509,6 +1599,7 @@ function DealRoom({prospectShareSlug}) {
   };
 
   const importDeals=async(drafts)=>{
+    if(guardLocked())return;
     // Matches against a fresh read from Supabase, not the deals already sitting in React
     // state -- if a previous import's post-import refetch (setRefreshKey below) hadn't
     // resolved yet by the time this import started, matching against stale state would
@@ -1551,6 +1642,7 @@ function DealRoom({prospectShareSlug}) {
   // state. can_manage_deal (creator or org owner/admin) already gates these at the RLS
   // layer -- a member who doesn't own this deal simply gets an error back.
   const updateTaskStatus=async(taskId,status)=>{
+    if(guardLocked())return;
     const {error}=await sb.from("deal_tasks").update({status}).eq("id",taskId);
     if(error){flash("Couldn't update task");return;}
     setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,mapItems:d.mapItems.map(t=>t.id===taskId?{...t,status}:t)}));
@@ -1565,6 +1657,7 @@ function DealRoom({prospectShareSlug}) {
   // Full-field edit from TaskModal (opened via the task ring) -- mirrors
   // updateTaskStatus's shape but covers every editable field, not just status.
   const updateTask=async(taskId,draft)=>{
+    if(guardLocked())return;
     const {error}=await sb.from("deal_tasks").update({
       task:draft.task,phase:draft.phase,owner_name:draft.owner||null,buyer_owner_label:draft.buyerOwner||null,
       due_date:draft.dueDate||null,status:draft.status,notes:draft.notes||null,approval_required:!!draft.approvalRequired,
@@ -1579,6 +1672,7 @@ function DealRoom({prospectShareSlug}) {
   };
 
   const addTask=async(draft)=>{
+    if(guardLocked())return;
     const {data,error}=await sb.from("deal_tasks").insert({
       deal_id:deal.id,
       created_by:session.user.id,
@@ -1604,6 +1698,7 @@ function DealRoom({prospectShareSlug}) {
   // plain deals update, already permitted by the existing can_manage_deal-keyed
   // deals_update RLS policy (0003), same boundary every other mutation here relies on.
   const updateExecSummary=async(newExecSummary)=>{
+    if(guardLocked())return;
     const {error}=await sb.from("deals").update({exec_summary:newExecSummary}).eq("id",deal.id);
     if(error){flash("Couldn't save changes");return;}
     setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,execSummary:newExecSummary}));
@@ -1638,6 +1733,7 @@ function DealRoom({prospectShareSlug}) {
     doc.save(`${deal.company.replace(/[^a-zA-Z0-9]+/g,"-")}-executive-summary.pdf`);
   };
   const updateDiscovery=async(newDiscovery)=>{
+    if(guardLocked())return;
     const {error}=await sb.from("deals").update({discovery:newDiscovery}).eq("id",deal.id);
     if(error){flash("Couldn't save changes");return;}
     setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,discovery:newDiscovery}));
@@ -1647,6 +1743,7 @@ function DealRoom({prospectShareSlug}) {
   // Writes one MEDDPIC field as a stored override -- every other field keeps deriving
   // from Discovery/Stakeholders/Action Plan exactly as before, untouched.
   const updateMeddpicField=async(key,text)=>{
+    if(guardLocked())return;
     const newMeddpic={...deal.meddpic,[key]:text};
     const {error}=await sb.from("deals").update({meddpic:newMeddpic}).eq("id",deal.id);
     if(error){flash("Couldn't save changes");return;}
@@ -1655,6 +1752,7 @@ function DealRoom({prospectShareSlug}) {
   };
 
   const addStakeholder=async(draft)=>{
+    if(guardLocked())return;
     const {data,error}=await sb.from("stakeholders").insert({
       deal_id:deal.id,created_by:session.user.id,name:draft.name,role_title:draft.role,
       designation:draft.designation,engagement_score:50,business_unit:draft.bu||null,
@@ -1669,6 +1767,7 @@ function DealRoom({prospectShareSlug}) {
   };
 
   const updateStakeholder=async(id,draft)=>{
+    if(guardLocked())return;
     const {error}=await sb.from("stakeholders").update({
       name:draft.name,role_title:draft.role,designation:draft.designation,business_unit:draft.bu||null,
       email:draft.email||null,linkedin_url:draft.linkedin||null,reports_to:draft.reportsTo,
@@ -1873,9 +1972,12 @@ select option{background:#fff}
             </div>
             <div style={{marginTop:7}}><div style={{height:3,background:"rgba(255,255,255,0.12)",borderRadius:99,overflow:"hidden"}}><div style={{width:`${dp}%`,height:"100%",background:isA?P.accent:"rgba(255,255,255,0.4)",borderRadius:99}}/></div></div>
           </div>);})}
-        {/* Client-side check only for a clean UX -- the real enforcement is the
-            enforce_deal_room_limit trigger (0017), which fires regardless of this. */}
-        {deals.length>=dealRoomLimit?
+        {/* Client-side checks only for a clean UX -- the real enforcement is the
+            enforce_deal_room_limit and enforce_org_not_locked triggers (0017/0018), which
+            fire regardless of this. */}
+        {isLocked?
+          <div style={{marginTop:8,padding:11,fontSize:12,color:"rgba(255,255,255,0.5)",textAlign:"center",lineHeight:1.5}}>Your trial has ended — upgrade to create deal rooms</div>
+        :deals.length>=dealRoomLimit?
           <div style={{marginTop:8,padding:11,fontSize:12,color:"rgba(255,255,255,0.5)",textAlign:"center",lineHeight:1.5}}>You've reached your plan's limit of {dealRoomLimit} deal rooms</div>
         :<button onClick={()=>setShowCreator(true)} style={{width:"100%",marginTop:8,display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:11,border:"1.5px dashed rgba(255,255,255,0.25)",borderRadius:9,background:"transparent",color:"rgba(255,255,255,0.85)",fontSize:13.5,fontWeight:600,cursor:"pointer"}}>+ New Deal Room</button>}
       </div>
@@ -1958,6 +2060,15 @@ select option{background:#fff}
         {tabs.map(([k,l])=><button key={k} onClick={()=>setTab(k)} style={{padding:"12px 16px",background:"none",border:"none",borderBottom:`2px solid ${tab===k?P.accent:"transparent"}`,color:tab===k?P.accent:P.textSec,fontSize:13,fontWeight:tab===k?700:400,cursor:"pointer",marginBottom:-1}}>{l}</button>)}
         {tab==="map"&&<div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:11,color:P.textMute}}>{done}/{visItems.length}</span><div style={{width:80,height:5,background:P.border,borderRadius:99,overflow:"hidden"}}><div style={{width:`${pct}%`,height:"100%",background:P.accent,borderRadius:99}}/></div><span style={{fontSize:11,fontWeight:800,color:P.accent}}>{pct}%</span></div>}
       </div>
+      {/* Trial-ended / payment-failed banner -- rep-side only, never shown to
+          viewMode==="prospect" (soft lock never touches prospect share links). Purely a UX
+          heads-up: guardLocked() (called from every create/edit mutation) and the
+          enforce_org_not_locked trigger (0018) are the actual gates, this banner just
+          explains why those are about to say no. */}
+      {viewMode==="rep"&&isLocked&&<div style={{background:P.redBg,borderBottom:`1px solid ${P.redBorder}`,padding:"10px 24px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexShrink:0}}>
+        <span style={{fontSize:12.5,color:P.red,fontWeight:600}}>{subscriptionStatus==="past_due"?"Payment failed — update billing to keep editing.":"Your trial has ended — upgrade to keep editing."}</span>
+        <button onClick={()=>{setShowSettings(true);}} style={{padding:"6px 14px",background:P.red,border:"none",borderRadius:6,color:"#fff",fontSize:11.5,fontWeight:700,cursor:"pointer",flexShrink:0}}>Upgrade</button>
+      </div>}
       {/* Body */}
       <div style={{display:"flex",flex:1,overflow:"hidden"}}>
         <div style={{flex:1,overflowY:"auto",padding:"22px 24px"}} className="fade">
