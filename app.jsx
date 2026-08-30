@@ -1109,6 +1109,7 @@ function DealRoom({prospectShareSlug}) {
   const [orgId,setOrgId]=useState(null);
   const [myRole,setMyRole]=useState(null);
   const [myProfile,setMyProfile]=useState(null); // the logged-in user's own profile -- sidebar identity, not "who created this deal"
+  const [dealRoomLimit,setDealRoomLimit]=useState(25); // base-plan cap on active deal rooms (organizations.deal_room_limit)
   const [showSettings,setShowSettings]=useState(false);
   const [loadingDeals,setLoadingDeals]=useState(!prospectShareSlug);
   const [deals,setDeals]=useState([]);
@@ -1222,7 +1223,7 @@ function DealRoom({prospectShareSlug}) {
         // rep-profile source for the Welcome tab's AE card, no extra query needed.
         allContributorIds.length?sb.from("profiles").select("id,email,full_name,avatar_url,title,phone,linkedin_url").in("id",allContributorIds):{data:[]},
         allDealIds.length?sb.from("deal_risk_signals").select("*").in("deal_id",allDealIds):{data:[]},
-        sb.from("organizations").select("name").eq("id",mem.org_id).single(),
+        sb.from("organizations").select("name,deal_room_limit").eq("id",mem.org_id).single(),
         sb.from("profiles").select("full_name,email,avatar_url,title").eq("id",session.user.id).single(),
       ]);
       if(cancelled)return;
@@ -1233,6 +1234,7 @@ function DealRoom({prospectShareSlug}) {
       const profileById=Object.fromEntries((contributors||[]).map(p=>[p.id,p]));
       const riskByDeal=Object.fromEntries((riskRows||[]).map(r=>[r.deal_id,r]));
       const orgName=orgRow?.name||null;
+      setDealRoomLimit(orgRow?.deal_room_limit||25);
       if(myProfileRow){
         const name=myProfileRow.full_name||myProfileRow.email;
         setMyProfile({name,email:myProfileRow.email,photo:myProfileRow.avatar_url,title:myProfileRow.title,initials:initialsOf(name)});
@@ -1496,8 +1498,14 @@ function DealRoom({prospectShareSlug}) {
     const{data:freshRows}=await sb.from("deals").select("*, stakeholders(*)").eq("org_id",orgId).is("archived_at",null);
     const known=(freshRows||[]).map(mapDealFromDb);
     const results=[];
+    // Updates (matched by company name) never count against the limit -- only a genuinely
+    // new row does, matching the enforce_deal_room_limit trigger (0017) this mirrors for UX.
     for(const draft of drafts){
       const existing=known.find(d=>d.company.toLowerCase()===draft.company.toLowerCase());
+      if(!existing&&known.length>=dealRoomLimit){
+        results.push({ok:false,action:"limit",company:draft.company});
+        continue;
+      }
       const result=existing?await mergeDealFromImport(existing,draft):await insertDeal(draft);
       if(result.ok&&result.action==="created"){
         known.push({...draft,id:result.id,company:draft.company,stakeholders:[]});
@@ -1506,12 +1514,14 @@ function DealRoom({prospectShareSlug}) {
     }
     const createdCount=results.filter(r=>r.ok&&r.action==="created").length;
     const updatedCount=results.filter(r=>r.ok&&r.action==="updated").length;
-    const failCount=results.filter(r=>!r.ok).length;
+    const limitSkippedCount=results.filter(r=>r.action==="limit").length;
+    const failCount=results.filter(r=>!r.ok&&r.action!=="limit").length;
     setShowCreator(false);
     const parts=[];
     if(createdCount)parts.push(`${createdCount} created`);
     if(updatedCount)parts.push(`${updatedCount} updated`);
     if(failCount)parts.push(`${failCount} failed`);
+    if(limitSkippedCount)parts.push(`Plan limit reached (${dealRoomLimit} active deal rooms) — ${limitSkippedCount} not imported`);
     flash(parts.join(", "));
     setRefreshKey(k=>k+1);
   };
@@ -1842,7 +1852,11 @@ select option{background:#fff}
             </div>
             <div style={{marginTop:7}}><div style={{height:3,background:"rgba(255,255,255,0.12)",borderRadius:99,overflow:"hidden"}}><div style={{width:`${dp}%`,height:"100%",background:isA?P.accent:"rgba(255,255,255,0.4)",borderRadius:99}}/></div></div>
           </div>);})}
-        <button onClick={()=>setShowCreator(true)} style={{width:"100%",marginTop:8,display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:11,border:"1.5px dashed rgba(255,255,255,0.25)",borderRadius:9,background:"transparent",color:"rgba(255,255,255,0.85)",fontSize:13.5,fontWeight:600,cursor:"pointer"}}>+ New Deal Room</button>
+        {/* Client-side check only for a clean UX -- the real enforcement is the
+            enforce_deal_room_limit trigger (0017), which fires regardless of this. */}
+        {deals.length>=dealRoomLimit?
+          <div style={{marginTop:8,padding:11,fontSize:12,color:"rgba(255,255,255,0.5)",textAlign:"center",lineHeight:1.5}}>You've reached your plan's limit of {dealRoomLimit} deal rooms</div>
+        :<button onClick={()=>setShowCreator(true)} style={{width:"100%",marginTop:8,display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:11,border:"1.5px dashed rgba(255,255,255,0.25)",borderRadius:9,background:"transparent",color:"rgba(255,255,255,0.85)",fontSize:13.5,fontWeight:600,cursor:"pointer"}}>+ New Deal Room</button>}
       </div>
       <div style={{paddingTop:12,marginTop:12,borderTop:"1px solid rgba(255,255,255,0.08)",display:"flex",alignItems:"center",gap:10}}>
         {myProfile?.photo?
