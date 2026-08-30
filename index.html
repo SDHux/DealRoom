@@ -87,7 +87,11 @@
        and a relative "app.jsx" resolves to /d/app.jsx there. The SPA catch-all redirect
        (_redirects: "/* /index.html 200") then serves back this HTML document instead of a
        clean 404, and the browser tries to parse it as JavaScript and fails. -->
-  <script type="text/babel" data-presets="react" src="/app.jsx"></script>
+  <!-- Cache-busting query param -- without one, browsers can keep serving a stale
+       cached copy of app.jsx across deploys with no visible sign anything is wrong (the
+       page loads fine, just running old code). Bump this on every deploy that changes
+       app.jsx; there's no build step here to automate it. -->
+  <script type="text/babel" data-presets="react" src="/app.jsx?v=2026-08-29-1"></script>
 
   <script>
     // Mount the app once Babel has processed app.jsx
