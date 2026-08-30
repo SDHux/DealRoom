@@ -1,4 +1,4 @@
-const { useState, useEffect } = React;
+const { useState, useEffect, useRef } = React;
 
 // Supabase project config. The anon/publishable key is safe to embed client-side --
 // protected by RLS, not secrecy -- same as any other public constant in this file.
@@ -283,9 +283,23 @@ const Badge = ({label,color,bg,border,small}) => (
 // Add/edit/remove for a plain list of free-text items -- shared by every editable list
 // section across Executive Summary and Discovery, instead of duplicating the same
 // add/remove logic at each of the 7 call sites.
-const EditableList = ({items,onChange}) => {
+const EditableList = React.forwardRef(({items,onChange},ref) => {
   const [draft,setDraft]=useState("");
   const add=()=>{if(!draft.trim())return;onChange([...items,draft.trim()]);setDraft("");};
+  // Exposes the "Add item" text as a save-time flush, not just the Enter/+Add path -- a
+  // parent's Save button only ever sees `items` (what's been committed), so without this
+  // whatever's still sitting typed-but-unsubmitted in the input is silently lost on Save.
+  // Returns the final array synchronously so the caller can use it immediately instead of
+  // reading back `items`, which won't reflect this flush until the next render.
+  React.useImperativeHandle(ref,()=>({
+    flush:()=>{
+      if(!draft.trim())return items;
+      const next=[...items,draft.trim()];
+      onChange(next);
+      setDraft("");
+      return next;
+    }
+  }));
   return (<div>
     {items.map((item,i)=>(
       <div key={i} style={{display:"flex",gap:8,alignItems:"center",marginBottom:6}}>
@@ -298,7 +312,7 @@ const EditableList = ({items,onChange}) => {
       <button onClick={add} style={{padding:"7px 14px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer",flexShrink:0}}>+ Add</button>
     </div>
   </div>);
-};
+});
 const renderMD = t => t
   .replace(/^## (.+)/gm,`<div style="font-size:12px;font-weight:800;color:${P.accent};margin:14px 0 5px;text-transform:uppercase;letter-spacing:.07em;border-bottom:2px solid ${P.accentLight};padding-bottom:3px">$1</div>`)
   .replace(/\*\*(.+?)\*\*/g,`<strong style="color:${P.text}">$1</strong>`)
@@ -1138,10 +1152,17 @@ function DealRoom({prospectShareSlug}) {
   // (a string for problem, an array for challenges/solutions).
   const [editingSummarySection,setEditingSummarySection]=useState(null);
   const [summarySectionDraft,setSummarySectionDraft]=useState(null);
+  // Handle onto the active section's EditableList, so Save can flush its unsubmitted
+  // "Add item" text before persisting (see EditableList.flush) instead of only saving
+  // whatever was already committed via +Add.
+  const execListRef=useRef(null);
   const [editingMeddpicSection,setEditingMeddpicSection]=useState(null); // null | one of the 7 keys
   const [meddpicSectionDraft,setMeddpicSectionDraft]=useState("");
   const [editingDiscovery,setEditingDiscovery]=useState(false);
   const [discoveryDraft,setDiscoveryDraft]=useState(null);
+  // Keyed by discoveryDraft field name ("corporateStrategy" etc, or "goal:<period>") --
+  // same flush-before-save purpose as execListRef, just one ref per list on this tab.
+  const discoveryListRefs=useRef({});
   const [showStakeholderModal,setShowStakeholderModal]=useState(false);
   const [editingStakeholder,setEditingStakeholder]=useState(null);
   const [newTask,setNewTask]=useState({phase:"Value Alignment",task:"",owner:"Mark H.",buyerOwner:"",dueDate:"",status:"pending",notes:"",approvalRequired:false});
@@ -2005,12 +2026,12 @@ select option{background:#fff}
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
                   <div style={{fontSize:16,fontWeight:800,color:P.text}}>{title}</div>
                   {viewMode==="rep"&&(editing?<div style={{display:"flex",gap:8}}>
-                    <button onClick={()=>{updateExecSummary({...deal.execSummary,[key]:summarySectionDraft});setEditingSummarySection(null);}} style={{padding:"6px 14px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Save</button>
+                    <button onClick={()=>{const finalValue=type==="list"&&execListRef.current?execListRef.current.flush():summarySectionDraft;updateExecSummary({...deal.execSummary,[key]:finalValue});setEditingSummarySection(null);}} style={{padding:"6px 14px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Save</button>
                     <button onClick={()=>setEditingSummarySection(null)} style={{padding:"6px 14px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:11,fontWeight:600,cursor:"pointer"}}>Cancel</button>
                   </div>:<button onClick={()=>{setSummarySectionDraft(type==="list"?(value||[]):(value||""));setEditingSummarySection(key);}} style={{padding:"6px 14px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:11,fontWeight:600,cursor:"pointer"}}>Edit</button>)}
                 </div>
                 {editing?(type==="list"?
-                  <EditableList items={summarySectionDraft} onChange={setSummarySectionDraft}/>
+                  <EditableList ref={execListRef} items={summarySectionDraft} onChange={setSummarySectionDraft}/>
                 :<textarea value={summarySectionDraft} onChange={e=>setSummarySectionDraft(e.target.value)} style={{width:"100%",height:120,border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",lineHeight:1.6,resize:"vertical",outline:"none"}}/>)
                 :(type==="list"?
                   <ol style={{paddingLeft:20}}>{(value||[]).map((item,i)=><li key={i} style={{fontSize:13,color:P.textSec,lineHeight:1.75,marginBottom:6}}>{item}</li>)}</ol>
@@ -2084,7 +2105,15 @@ select option{background:#fff}
               <div><div className="headline" style={{fontSize:22,color:P.text}}>Business Outcomes & Value Identification</div><div style={{fontSize:13,color:P.textSec,marginTop:3}}>{deal.company} · {deal.industry}</div></div>
               {viewMode==="rep"&&<div style={{display:"flex",gap:8}}>
                 {editingDiscovery?<>
-                  <button onClick={()=>{updateDiscovery(discoveryDraft);setEditingDiscovery(false);}} style={{padding:"8px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Save</button>
+                  <button onClick={()=>{
+                    const finalDraft={...discoveryDraft,goals:{...discoveryDraft.goals}};
+                    Object.entries(discoveryListRefs.current).forEach(([refKey,inst])=>{
+                      if(!inst)return;
+                      if(refKey.startsWith("goal:")){finalDraft.goals[refKey.slice(5)]=inst.flush();}
+                      else{finalDraft[refKey]=inst.flush();}
+                    });
+                    updateDiscovery(finalDraft);setEditingDiscovery(false);
+                  }} style={{padding:"8px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Save</button>
                   <button onClick={()=>setEditingDiscovery(false)} style={{padding:"8px 16px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer"}}>Cancel</button>
                 </>:<>
                   <button onClick={()=>{setDiscoveryDraft({summary:deal.discovery.summary||"",corporateStrategy:deal.discovery.corporateStrategy||[],topOutcomes:deal.discovery.topOutcomes||[],challenges:deal.discovery.challenges||[],jobsToBeDone:deal.discovery.jobsToBeDone||[],primaryUseCase:deal.discovery.primaryUseCase||"",goals:{...deal.discovery.goals}});setEditingDiscovery(true);}} style={{padding:"8px 16px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer"}}>Edit</button>
@@ -2100,7 +2129,7 @@ select option{background:#fff}
               {[{key:"corporateStrategy",title:"Corporate Strategy & Growth Initiatives"},{key:"topOutcomes",title:"Top Business Outcomes"},{key:"challenges",title:"Current Challenges"},{key:"jobsToBeDone",title:"Jobs to Be Done"}].map(({key,title})=>(
                 <div key={key} style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:10,padding:"14px 18px",marginBottom:12}}>
                   <div style={{fontSize:13,fontWeight:700,color:P.text,marginBottom:10}}>{title}</div>
-                  <EditableList items={discoveryDraft[key]} onChange={v=>setDiscoveryDraft(d=>({...d,[key]:v}))}/>
+                  <EditableList ref={el=>discoveryListRefs.current[key]=el} items={discoveryDraft[key]} onChange={v=>setDiscoveryDraft(d=>({...d,[key]:v}))}/>
                 </div>
               ))}
               <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:10,padding:"16px 18px",marginBottom:12}}>
@@ -2113,7 +2142,7 @@ select option{background:#fff}
                   {GOAL_PERIODS.map(period=>(
                     <div key={period}>
                       <div style={{fontSize:10,fontWeight:800,color:P.accent,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10}}>{period}</div>
-                      <EditableList items={discoveryDraft.goals[period]} onChange={v=>setDiscoveryDraft(d=>({...d,goals:{...d.goals,[period]:v}}))}/>
+                      <EditableList ref={el=>discoveryListRefs.current["goal:"+period]=el} items={discoveryDraft.goals[period]} onChange={v=>setDiscoveryDraft(d=>({...d,goals:{...d.goals,[period]:v}}))}/>
                     </div>
                   ))}
                 </div>
