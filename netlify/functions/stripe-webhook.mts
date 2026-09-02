@@ -40,12 +40,16 @@ export default async (req: Request, context: Context) => {
     Prefer: "return=minimal",
   };
 
+  // Same silent-failure risk as the checkout.session.completed handler below -- this is the
+  // shared write path for every other event type, so the same visibility applies here too.
   const patchOrgByCustomer = async (customerId: string, patch: Record<string, unknown>) => {
-    await fetch(`${SUPABASE_URL}/rest/v1/organizations?stripe_customer_id=eq.${customerId}`, {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/organizations?stripe_customer_id=eq.${customerId}`, {
       method: "PATCH",
       headers: dbHeaders,
       body: JSON.stringify(patch),
     });
+    console.log("stripe-webhook: organizations PATCH (by customer) ok=", res.ok, "status=", res.status);
+    if (!res.ok) console.error("stripe-webhook: organizations PATCH (by customer) body:", await res.text());
   };
 
   try {
@@ -55,10 +59,12 @@ export default async (req: Request, context: Context) => {
         const subRes = await fetch(`https://api.stripe.com/v1/subscriptions/${session.subscription}`, {
           headers: { Authorization: `Bearer ${Netlify.env.get("STRIPE_SECRET_KEY")}` },
         });
+        console.log("stripe-webhook: subscription fetch ok=", subRes.ok, subRes.ok ? "" : `status=${subRes.status}`);
+        if (!subRes.ok) console.error("stripe-webhook: subscription fetch body:", await subRes.text());
         const sub = subRes.ok ? await subRes.json() : null;
         const orgId = session.client_reference_id;
         if (orgId && sub) {
-          await fetch(`${SUPABASE_URL}/rest/v1/organizations?id=eq.${orgId}`, {
+          const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/organizations?id=eq.${orgId}`, {
             method: "PATCH",
             headers: dbHeaders,
             body: JSON.stringify({
@@ -67,6 +73,8 @@ export default async (req: Request, context: Context) => {
               current_period_end: new Date(currentPeriodEndOf(sub) * 1000).toISOString(),
             }),
           });
+          console.log("stripe-webhook: organizations PATCH ok=", patchRes.ok, "status=", patchRes.status);
+          if (!patchRes.ok) console.error("stripe-webhook: organizations PATCH body:", await patchRes.text());
         }
         break;
       }
