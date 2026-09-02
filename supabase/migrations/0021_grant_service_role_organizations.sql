@@ -1,0 +1,19 @@
+-- Formalizes a grant that was applied by hand directly in the SQL Editor while debugging
+-- stripe-webhook.mts (checkout.session.completed was returning 200, but the organizations
+-- PATCH was silently failing -- see the webhook's own added logging, added the same day).
+-- Without this migration the fix only exists in the live database, not in migration
+-- history, and would vanish if this database were ever rebuilt from these files.
+--
+-- Root cause, worth remembering: service_role bypassing RLS and service_role having table
+-- privileges are two entirely independent things in Postgres. RLS-bypass is a role
+-- attribute; SELECT/INSERT/UPDATE/DELETE are ordinary SQL privileges gated by GRANT/REVOKE
+-- same as for any other role, RLS bypass or not. Every grant in this schema's history
+-- (0007_grants.sql onward) was written for `authenticated` only -- service_role was never
+-- explicitly provisioned anywhere, because nothing needed a direct service-role table write
+-- until this webhook, which has no user session to scope a SECURITY DEFINER RPC to (see its
+-- own header comment). That's the one legitimate exception to this app's "no service-role
+-- key" pattern -- and it still needed its own explicit grant, same as anything else would.
+--
+-- Scoped narrowly to match exactly what the webhook does (read the current row to look it
+-- up by stripe_customer_id, then update it) -- not a blanket ALL grant.
+grant select, update on public.organizations to service_role;
