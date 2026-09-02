@@ -64,7 +64,7 @@ export default async (req: Request, context: Context) => {
             body: JSON.stringify({
               stripe_subscription_id: sub.id,
               subscription_status: mapStripeStatus(sub.status),
-              current_period_end: new Date(sub.current_period_end * 1000).toISOString(),
+              current_period_end: new Date(currentPeriodEndOf(sub) * 1000).toISOString(),
             }),
           });
         }
@@ -75,7 +75,7 @@ export default async (req: Request, context: Context) => {
         await patchOrgByCustomer(sub.customer, {
           stripe_subscription_id: sub.id,
           subscription_status: mapStripeStatus(sub.status),
-          current_period_end: new Date(sub.current_period_end * 1000).toISOString(),
+          current_period_end: new Date(currentPeriodEndOf(sub) * 1000).toISOString(),
         });
         break;
       }
@@ -97,12 +97,23 @@ export default async (req: Request, context: Context) => {
       default:
         break; // Unhandled event types are ignored, not errors -- still ack with 200.
     }
-  } catch {
+  } catch (err) {
+    console.error("stripe-webhook error:", err);
     return new Response("Webhook processing failed", { status: 500 });
   }
 
   return new Response(JSON.stringify({ received: true }), { headers: { "Content-Type": "application/json" } });
 };
+
+// Stripe's Basil API version (2025-03-31 onward, which includes 2026-08-26.dahlia this
+// webhook is pinned to) removed current_period_end/current_period_start from the top-level
+// Subscription object -- they now live per subscription item instead. This app only ever
+// creates single-item subscriptions (one price, see create-checkout-session.mts), so the
+// first item is always the one that matters.
+// https://docs.stripe.com/changelog/basil/2025-03-31/deprecate-subscription-current-period-start-and-end
+function currentPeriodEndOf(sub: any): number | undefined {
+  return sub.items?.data?.[0]?.current_period_end;
+}
 
 // Real Stripe subscription statuses (trialing/active/past_due/canceled/unpaid/incomplete/
 // incomplete_expired/paused) collapsed onto this app's narrower check constraint (0018).
