@@ -684,6 +684,21 @@ const AuthGate = () => {
   const [orgName,setOrgName]=useState(""); const [fullName,setFullName]=useState("");
   const [phone,setPhone]=useState(""); const [termsAccepted,setTermsAccepted]=useState(false);
   const [error,setError]=useState(""); const [loading,setLoading]=useState(false);
+  const [forgotSent,setForgotSent]=useState(false);
+
+  // resetPasswordForEmail deliberately doesn't reveal whether the email exists (Supabase's
+  // own behavior) -- forgotSent shows the same generic confirmation either way, avoiding
+  // account enumeration. The emailed link lands on /reset-password, but detection of the
+  // recovery session doesn't depend on that path -- see DealRoom's onAuthStateChange, which
+  // catches Supabase's PASSWORD_RECOVERY event regardless of which page it fires on.
+  const sendResetLink=async()=>{
+    if(!email){setError("Enter your email above first, then click \"Forgot password?\" again.");return;}
+    setLoading(true);setError("");
+    const {error:resetErr}=await sb.auth.resetPasswordForEmail(email,{redirectTo:`${window.location.origin}/reset-password`});
+    setLoading(false);
+    if(resetErr){setError(resetErr.message||"Couldn't send reset email.");return;}
+    setForgotSent(true);
+  };
 
   const submit=async()=>{
     setLoading(true);setError("");
@@ -743,6 +758,9 @@ const AuthGate = () => {
           <input value={email} onChange={e=>setEmail(e.target.value)} type="email" placeholder="you@company.com" style={inp}/></div>
         <div style={{marginBottom:mode==="signup"?14:20}}><label style={lbl}>Password</label>
           <input value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} type="password" placeholder="••••••••" style={inp}/>
+          {mode==="signin"&&(forgotSent?
+            <div style={{fontSize:12,color:P.textSec,marginTop:8}}>Check your email for a link to reset your password.</div>
+          :<div onClick={sendResetLink} style={{fontSize:12,color:P.accent,fontWeight:600,cursor:"pointer",marginTop:8,textAlign:"right"}}>Forgot password?</div>)}
           {error&&<div style={{fontSize:11,color:P.red,marginTop:6}}>{error}</div>}</div>
         {mode==="signup"&&<label style={{display:"flex",gap:8,alignItems:"flex-start",marginBottom:20,fontSize:12,color:P.textSec,lineHeight:1.5,cursor:"pointer"}}>
           <input type="checkbox" checked={termsAccepted} onChange={e=>setTermsAccepted(e.target.checked)} style={{marginTop:2}}/>
@@ -755,11 +773,50 @@ const AuthGate = () => {
           </span>
         </label>}
         <button onClick={submit} disabled={loading||!email||!password||(mode==="signup"&&(!orgName||!termsAccepted))} style={{width:"100%",padding:"12px",background:loading||!email||!password?P.border:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:14,fontWeight:700,cursor:loading?"not-allowed":"pointer"}}>{loading?"Please wait…":mode==="signup"?"Create Workspace →":"Sign In →"}</button>
-        <div style={{textAlign:"center",marginTop:18,fontSize:12,color:P.textMute}}>
-          {mode==="signup"?"Already have an account? ":"New here? "}
+        <div style={{textAlign:"center",marginTop:18,fontSize:15,color:P.textMute}}>
+          {mode==="signup"?"Already have an account? ":"New User "}
           <span onClick={()=>{setMode(mode==="signup"?"signin":"signup");setError("");}} style={{color:P.accent,fontWeight:700,cursor:"pointer"}}>{mode==="signup"?"Sign in":"Create a workspace"}</span>
         </div>
       </>)}
+    </div>
+  </div>);
+};
+
+// Shown instead of the normal AuthGate/app flow when DealRoom's onAuthStateChange catches a
+// PASSWORD_RECOVERY event -- Supabase establishes a real (if short-lived) session the moment
+// the user lands via their emailed reset link, before they've actually set a new password.
+// Signs out on success so onDone() reliably lands back on plain sign-in, rather than
+// silently dropping them into the app on that recovery session.
+const ResetPassword = ({onDone}) => {
+  const [password,setPassword]=useState("");
+  const [error,setError]=useState("");
+  const [loading,setLoading]=useState(false);
+
+  const submit=async()=>{
+    if(password.length<6){setError("Password must be at least 6 characters.");return;}
+    setLoading(true);setError("");
+    const {error:updErr}=await sb.auth.updateUser({password});
+    if(updErr){setError(updErr.message||"Couldn't update password.");setLoading(false);return;}
+    await sb.auth.signOut();
+    onDone();
+  };
+
+  const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:8,padding:"11px 14px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
+  const lbl={fontSize:11,fontWeight:700,color:P.textSec,textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:5};
+
+  return (<div style={{flex:1,minHeight:"100vh",background:"linear-gradient(135deg,#FBE9E2 0%,#F6F5F2 60%,#E1EEEC 100%)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+    <div style={{width:420,background:P.surface,borderRadius:20,padding:"44px 40px",boxShadow:"0 20px 60px rgba(27,31,35,0.10)",border:`1px solid ${P.border}`}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:28}}>
+        <div style={{width:36,height:36,background:P.ink,borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{width:20,height:20}}>{LOGO_MARK}</div></div>
+        <span className="headline" style={{fontSize:17,color:P.text}}>myBivy</span>
+      </div>
+      <div className="headline" style={{fontSize:24,color:P.text,marginBottom:24}}>Set a new password</div>
+      <div style={{marginBottom:20}}>
+        <label style={lbl}>New Password</label>
+        <input value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} type="password" placeholder="••••••••" style={inp}/>
+        {error&&<div style={{fontSize:11,color:P.red,marginTop:6}}>{error}</div>}
+      </div>
+      <button onClick={submit} disabled={loading||!password} style={{width:"100%",padding:"12px",background:loading||!password?P.border:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:14,fontWeight:700,cursor:loading?"not-allowed":"pointer"}}>{loading?"Please wait…":"Set Password →"}</button>
     </div>
   </div>);
 };
@@ -1017,7 +1074,7 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
             return (<>
               <div style={{fontSize:14,fontWeight:700,color:status==="past_due"||(status==="trialing"&&daysLeft===0)?P.red:P.text,marginBottom:4}}>{label}</div>
               {status==="active"&&org?.current_period_end&&<div style={{fontSize:12,color:P.textMute,marginBottom:16}}>Renews {new Date(org.current_period_end).toLocaleDateString()}</div>}
-              {status!=="active"&&<div style={{fontSize:12,color:P.textMute,marginBottom:16}}>myBivy is a single paid plan, up to {org?.deal_room_limit||25} active deal rooms.</div>}
+              {status!=="active"&&<div style={{fontSize:12,color:P.textMute,marginBottom:16}}>myBivy is a single paid plan, up to {org?.deal_room_limit||10} active deal rooms.</div>}
             </>);
           })()}
           {billingError&&<div style={{fontSize:12,color:P.red,marginBottom:12,padding:"8px 12px",background:P.redBg,border:`1px solid ${P.redBorder}`,borderRadius:6}}>{billingError}</div>}
@@ -1190,12 +1247,13 @@ const TaskModal = ({task,phases,onSave,onDelete,onClose}) => {
 
 function DealRoom({prospectShareSlug}) {
   const [session,setSession]=useState(undefined); // undefined=checking, null=signed out, object=signed in
+  const [isPasswordRecovery,setIsPasswordRecovery]=useState(false); // true between landing on a reset-password link and setting a new password
   const [needsOrgSetup,setNeedsOrgSetup]=useState(false);
   const [refreshKey,setRefreshKey]=useState(0);
   const [orgId,setOrgId]=useState(null);
   const [myRole,setMyRole]=useState(null);
   const [myProfile,setMyProfile]=useState(null); // the logged-in user's own profile -- sidebar identity, not "who created this deal"
-  const [dealRoomLimit,setDealRoomLimit]=useState(25); // base-plan cap on active deal rooms (organizations.deal_room_limit)
+  const [dealRoomLimit,setDealRoomLimit]=useState(10); // base-plan cap on active deal rooms (organizations.deal_room_limit)
   // Billing state -- mirrors org_is_locked (0018) for UX only; the real gate is the
   // enforce_org_not_locked trigger on deals/stakeholders/deal_tasks. Never checked for
   // viewMode==="prospect" -- soft lock is rep-side only, prospect share links are unaffected.
@@ -1264,7 +1322,10 @@ function DealRoom({prospectShareSlug}) {
   useEffect(()=>{
     if(prospectShareSlug)return;
     sb.auth.getSession().then(({data})=>setSession(data.session)).catch(e=>setInitError(e.message||String(e)));
-    const {data:sub}=sb.auth.onAuthStateChange((_event,s)=>setSession(s));
+    // PASSWORD_RECOVERY fires when the user lands via their emailed reset link -- Supabase
+    // establishes a real session at that point (session below won't be null), which would
+    // otherwise drop them straight into the app instead of the "set new password" screen.
+    const {data:sub}=sb.auth.onAuthStateChange((authEvent,s)=>{setSession(s);if(authEvent==="PASSWORD_RECOVERY")setIsPasswordRecovery(true);});
     return ()=>sub.subscription.unsubscribe();
   },[prospectShareSlug]);
 
@@ -1341,7 +1402,7 @@ function DealRoom({prospectShareSlug}) {
       const profileById=Object.fromEntries((contributors||[]).map(p=>[p.id,p]));
       const riskByDeal=Object.fromEntries((riskRows||[]).map(r=>[r.deal_id,r]));
       const orgName=orgRow?.name||null;
-      setDealRoomLimit(orgRow?.deal_room_limit||25);
+      setDealRoomLimit(orgRow?.deal_room_limit||10);
       setSubscriptionStatus(orgRow?.subscription_status||"trialing");
       setTrialEndsAt(orgRow?.trial_ends_at||null);
       if(myProfileRow){
@@ -1899,6 +1960,7 @@ select option{background:#fff}
   } else {
     // Rep path: auth, then org bootstrap, then real data load.
     if(session===undefined)return <LoadingScreen/>;
+    if(isPasswordRecovery)return <ResetPassword onDone={()=>setIsPasswordRecovery(false)}/>;
     if(session===null)return <AuthGate/>;
     if(needsOrgSetup)return <NameYourOrg onDone={()=>{setNeedsOrgSetup(false);setRefreshKey(k=>k+1);}}/>;
     if(loadingDeals)return <LoadingScreen/>;
@@ -1986,7 +2048,7 @@ select option{background:#fff}
           <img src={myProfile.photo} alt={myProfile.name} style={{width:34,height:34,borderRadius:"50%",objectFit:"cover",flexShrink:0}}/>
         :<div style={{width:34,height:34,borderRadius:"50%",background:P.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color:"#fff",flexShrink:0}}>{myProfile?.initials||"?"}</div>}
         <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#fff",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{myProfile?.name||session?.user?.email||"…"}</div>{myProfile?.title&&<div style={{fontSize:11,color:"rgba(255,255,255,0.4)",marginTop:1}}>{myProfile.title}</div>}</div>
-        {(myRole==="owner"||myRole==="admin")&&<button onClick={()=>setShowSettings(true)} title="Team & Settings" style={{background:"none",border:"none",color:"rgba(255,255,255,0.5)",fontSize:14,cursor:"pointer",flexShrink:0}}>⚙</button>}
+        {(myRole==="owner"||myRole==="admin")&&<button onClick={()=>setShowSettings(true)} title="Team & Settings" style={{background:"none",border:"none",color:"rgba(255,255,255,0.75)",fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",gap:5}}><span style={{fontSize:21}}>⚙</span>Settings</button>}
         <button onClick={()=>sb.auth.signOut()} title="Sign out" style={{background:"none",border:"none",color:"rgba(255,255,255,0.5)",fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0}}>Sign out</button>
       </div>
     </div>}
