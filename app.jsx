@@ -2384,7 +2384,7 @@ select option{background:#fff}
               </div>
             </div>
             {[
-              {key:"problem",title:"The Problem",type:"text"},
+              {key:"problem",title:"Business Objective",type:"text"},
               {key:"challenges",title:"Key Challenges",type:"list"},
               {key:"solutions",title:"Solutions",type:"list"},
             ].map(({key,title,type})=>{
