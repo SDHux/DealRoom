@@ -2217,27 +2217,11 @@ select option{background:#fff}
   const done=visItems.filter(t=>t.status==="complete").length;
   const pct=Math.round(done/(visItems.length||1)*100);
 
-  if(!prospectShareSlug&&viewMode==="prospect"&&!prospectAuth[activeId]){
-    return <div style={{fontFamily:"'Inter','Segoe UI',sans-serif"}}><style>{CSS}</style>
-      <div style={{display:"flex",minHeight:"100vh"}}>
-        <div style={{width:264,background:P.ink,display:"flex",flexDirection:"column",flexShrink:0,padding:"24px 16px"}}>
-          <div style={{display:"flex",alignItems:"center",gap:10,padding:"4px 4px 22px"}}>
-            <div style={{width:36,height:36,borderRadius:9,background:"rgba(255,255,255,0.08)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><div style={{width:20,height:20}}>{LOGO_MARK}</div></div>
-            <div><div className="headline" style={{fontSize:18,color:"#fff",lineHeight:1}}>myBivy</div><div className="mono" style={{fontSize:9.5,letterSpacing:"0.08em",textTransform:"uppercase",color:"rgba(255,255,255,0.4)",marginTop:3}}>By SRENE</div></div>
-          </div>
-          <div style={{display:"flex",background:"rgba(255,255,255,0.06)",borderRadius:9,padding:3,marginBottom:20}}>
-            {[["rep","Sales Rep"],["prospect","Prospect"]].map(([v,l])=>(
-              <button key={v} onClick={()=>{setViewMode(v);setTab(v==="prospect"?"welcome":"map");}} style={{flex:1,padding:"8px 0",fontSize:12.5,fontWeight:600,color:viewMode===v?"#fff":"rgba(255,255,255,0.5)",background:viewMode===v?P.accent:"transparent",border:"none",borderRadius:7,cursor:"pointer"}}>{l}</button>))}
-          </div>
-          <div className="mono" style={{fontSize:10.5,letterSpacing:"0.08em",textTransform:"uppercase",color:"rgba(255,255,255,0.35)",marginBottom:12,padding:"0 6px"}}>Active Deals</div>
-          {deals.map(d=><div key={d.id} onClick={()=>setActiveId(d.id)} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 8px",borderRadius:8,background:d.id===activeId?"rgba(255,255,255,0.07)":"transparent",marginBottom:2,cursor:"pointer"}}>
-            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13.5,fontWeight:600,color:"#fff",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{d.company}</div><div className="mono" style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}>{d.value}</div></div>
-          </div>)}
-        </div>
-        <ProspectLogin deal={deal} onSuccess={email=>setProspectAuth(p=>({...p,[activeId]:email}))}/>
-      </div>
-    </div>;
-  }
+  // Rep's own "Prospect" preview toggle -- viewMode==="prospect" here is always a rep with a
+  // real authenticated session and org membership looking at their own deal for convenience,
+  // never a real external buyer (that's the entirely separate prospectShareSlug branch above,
+  // which does its own ProspectLogin gate at the top of this function). No login/access-code
+  // check belongs here; just render the prospect-facing content directly.
 
   return <div style={{fontFamily:"'Inter','Segoe UI',sans-serif",background:P.bg,minHeight:"100vh",display:"flex",color:P.text}}>
     <style>{CSS}</style>
