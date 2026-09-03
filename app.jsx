@@ -704,26 +704,18 @@ const AuthGate = () => {
     setLoading(true);setError("");
     try{
       if(mode==="signup"){
-        const {data,error:signUpErr}=await sb.auth.signUp({email,password});
+        // org_name/full_name/phone/terms_accepted_at all ride along as user metadata instead
+        // of being acted on here -- Supabase stores this on auth.users regardless of whether
+        // email confirmation is required, so it survives however long that takes. DealRoom's
+        // own membership-resolution effect is the one place that reads it back and actually
+        // creates the org/writes profiles, once a real session exists -- see its comment for
+        // why duplicating that logic here (as this used to) isn't needed anymore.
+        const {data,error:signUpErr}=await sb.auth.signUp({
+          email,password,
+          options:{data:{org_name:orgName,full_name:fullName||null,phone:phone||null,terms_accepted_at:new Date().toISOString()}},
+        });
         if(signUpErr)throw signUpErr;
-        if(data.session){
-          // Defensive: with "Confirm email" off this branch can still fire immediately
-          // (see 0010_org_invitations.sql's header comment), so check for a pending
-          // invite before creating a brand-new org -- an invited teammate landing on the
-          // plain signup form should join their team, not become owner of a bogus one.
-          const {data:joinedOrgId,error:acceptErr}=await sb.rpc("accept_pending_invite");
-          if(acceptErr)throw acceptErr;
-          if(!joinedOrgId){
-            const {error:rpcErr}=await sb.rpc("create_organization_with_owner",{p_org_name:orgName,p_full_name:fullName||null,p_phone:phone||null});
-            if(rpcErr)throw rpcErr;
-          }
-          // Audit record of consent, not a hard server-side gate -- the required checkbox
-          // below (disabling this whole submit button until checked) is the actual
-          // enforcement. Covers both branches above: the profile row now exists either way.
-          await sb.from("profiles").update({terms_accepted_at:new Date().toISOString()}).eq("id",data.user.id);
-        }else{
-          setMode("check-email");
-        }
+        if(!data.session)setMode("check-email");
       }else{
         const {error:signInErr}=await sb.auth.signInWithPassword({email,password});
         if(signInErr)throw signInErr;
@@ -1088,6 +1080,45 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
   </div>);
 };
 
+// Shown once, over the empty "no deal rooms yet" state, the first time an org's owner logs
+// in -- gated by organizations.onboarding_seen (0023), not a one-time in-memory flag, so it
+// still shows correctly even if they close the tab before dismissing it. Content/layout
+// lifted directly from mybivy-welcome-screen-overlay-mockup.html.
+const WelcomeOverlay = ({onDone}) => {
+  const [tooltipOpen,setTooltipOpen]=useState(false);
+  return (<div style={{position:"fixed",inset:0,background:"rgba(20,22,25,0.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:24}}>
+    <div style={{width:"100%",maxWidth:560,background:P.surface,borderRadius:20,boxShadow:"0 30px 80px rgba(0,0,0,0.35)",overflow:"hidden"}}>
+      <div style={{padding:"40px 40px 0"}}>
+        <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:6,position:"relative"}}>
+          <div onClick={()=>setTooltipOpen(v=>!v)} style={{width:52,height:52,borderRadius:14,background:P.ink,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,cursor:"pointer"}}>
+            <svg width="26" height="26" viewBox="0 0 26 26" fill="none">
+              <path d="M13 4L23 21H16.5L13 15L9.5 21H3L13 4Z" stroke={P.accent} strokeWidth="1.8" strokeLinejoin="round"/>
+              <path d="M13 15L11 21H15L13 15Z" fill={P.chalk}/>
+              <path d="M3 21H23" stroke={P.chalk} strokeWidth="1.6" strokeLinecap="round"/>
+            </svg>
+          </div>
+          <div className="headline" style={{fontSize:34,color:P.text,lineHeight:1.05}}>Welcome to your Bivy.</div>
+          {tooltipOpen&&<div style={{position:"absolute",top:62,left:0,width:320,background:P.ink,color:P.chalk,fontSize:13,lineHeight:1.55,padding:"14px 16px",borderRadius:10,boxShadow:"0 12px 30px rgba(0,0,0,0.3)",zIndex:10}}>
+            <b style={{color:P.accent}}>bivy</b> (noun) — a temporary base camp where an expedition readies before the final push to the summit.
+          </div>}
+        </div>
+        <p style={{fontSize:15.5,color:P.textSec,margin:"14px 0 0",lineHeight:1.5}}>You're ready to create and share deal rooms.</p>
+      </div>
+      <div style={{padding:"28px 40px 8px"}}>
+        {[["1",<>Complete your profile in <b>Settings</b></>],["2",<>Create your <b>first deal room</b></>],["3",<>Share it with your prospect and <b>align on your sequence of events</b></>]].map(([num,text],i)=>(
+          <div key={num} style={{display:"flex",alignItems:"flex-start",gap:14,padding:"16px 0",borderTop:i===0?"none":`1px solid ${P.border}`}}>
+            <div style={{width:26,height:26,borderRadius:"50%",background:P.chalk,color:P.text,fontWeight:700,fontSize:13,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1}}>{num}</div>
+            <div style={{fontSize:14.5,color:P.text,lineHeight:1.5,paddingTop:3}}>{text}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{padding:"24px 40px 40px"}}>
+        <button onClick={onDone} style={{width:"100%",padding:14,background:P.accent,border:"none",borderRadius:10,color:"#fff",fontSize:15,fontWeight:700,cursor:"pointer"}}>Get Started →</button>
+      </div>
+    </div>
+  </div>);
+};
+
 // The deal's share_slug/access_code were being generated and stored (createDeal) but
 // never surfaced anywhere in the UI -- a rep had no way to actually hand a prospect their
 // link without going into Supabase directly. This is that missing affordance.
@@ -1259,6 +1290,10 @@ function DealRoom({prospectShareSlug}) {
   // viewMode==="prospect" -- soft lock is rep-side only, prospect share links are unaffected.
   const [subscriptionStatus,setSubscriptionStatus]=useState("trialing");
   const [trialEndsAt,setTrialEndsAt]=useState(null);
+  // organizations.onboarding_seen (0023) is the permanent gate, re-checked on every org data
+  // load (not a one-time "just created" flag) -- so it still shows correctly if the owner
+  // closes the tab before dismissing it, on their very next login.
+  const [showWelcome,setShowWelcome]=useState(false);
   const isLocked=subscriptionStatus==="active"?false:(subscriptionStatus==="trialing"?!(trialEndsAt&&new Date(trialEndsAt)>new Date()):true);
   // Client-side mirror of the enforce_org_not_locked trigger (0018) -- called at the top of
   // every create/edit mutation (not deletes, matching the trigger's own scope) so a locked
@@ -1340,19 +1375,9 @@ function DealRoom({prospectShareSlug}) {
       if(cancelled)return;
       if(memErr)throw memErr;
       if(!mem){
-        // Right after signup, this can legitimately race the signup RPC that's still
-        // creating the org/membership row -- one short retry before concluding the user
-        // really does need the "name your organization" fallback screen.
-        await new Promise(r=>setTimeout(r,1000));
-        if(cancelled)return;
-        ({data:mem,error:memErr}=await sb.from("organization_members").select("org_id,role").eq("user_id",session.user.id).limit(1).maybeSingle());
-        if(cancelled)return;
-        if(memErr)throw memErr;
-      }
-      if(!mem){
         // No membership yet -- check for a pending team invitation before concluding this
-        // is a brand-new user who needs to create their own org. See accept_pending_invite
-        // in 0010_org_invitations.sql for why this only auto-joins a verified email.
+        // is a brand-new user who needs their own org created. See accept_pending_invite in
+        // 0010_org_invitations.sql for why this only auto-joins a verified email.
         const {data:joinedOrgId,error:acceptErr}=await sb.rpc("accept_pending_invite");
         if(cancelled)return;
         if(acceptErr)throw acceptErr;
@@ -1360,6 +1385,37 @@ function DealRoom({prospectShareSlug}) {
           ({data:mem,error:memErr}=await sb.from("organization_members").select("org_id,role").eq("user_id",session.user.id).limit(1).maybeSingle());
           if(cancelled)return;
           if(memErr)throw memErr;
+        }else{
+          // Not an invited teammate -- org_name/full_name/phone/terms_accepted_at were
+          // carried through signup as user metadata (see AuthGate.submit()) precisely so
+          // this moment, whenever a real session finally exists, needs no form and no
+          // re-asking. Missing org_name only happens for an account that predates this
+          // metadata-carrying signup, or some other session-creating path this app doesn't
+          // have yet -- NameYourOrg stays as the fallback for exactly that edge case.
+          const meta=session.user.user_metadata||{};
+          if(meta.org_name){
+            const {error:rpcErr}=await sb.rpc("create_organization_with_owner",{p_org_name:meta.org_name,p_full_name:meta.full_name||null,p_phone:meta.phone||null});
+            if(cancelled)return;
+            if(rpcErr)throw rpcErr;
+            ({data:mem,error:memErr}=await sb.from("organization_members").select("org_id,role").eq("user_id",session.user.id).limit(1).maybeSingle());
+            if(cancelled)return;
+            if(memErr)throw memErr;
+          }
+        }
+        if(mem){
+          // One-time backfill onto profiles, covering the invited-teammate path too (whose
+          // own accept_pending_invite insert leaves full_name/phone blank today). Harmless
+          // no-op on every later login -- this whole block only runs when membership didn't
+          // already exist.
+          const meta=session.user.user_metadata||{};
+          if(meta.full_name||meta.phone||meta.terms_accepted_at){
+            await sb.from("profiles").update({
+              ...(meta.full_name?{full_name:meta.full_name}:{}),
+              ...(meta.phone?{phone:meta.phone}:{}),
+              ...(meta.terms_accepted_at?{terms_accepted_at:meta.terms_accepted_at}:{}),
+            }).eq("id",session.user.id);
+            if(cancelled)return;
+          }
         }
       }
       if(!mem){setNeedsOrgSetup(true);setLoadingDeals(false);return;}
@@ -1391,7 +1447,7 @@ function DealRoom({prospectShareSlug}) {
         // rep-profile source for the Welcome tab's AE card, no extra query needed.
         allContributorIds.length?sb.from("profiles").select("id,email,full_name,avatar_url,title,phone,linkedin_url").in("id",allContributorIds):{data:[]},
         allDealIds.length?sb.from("deal_risk_signals").select("*").in("deal_id",allDealIds):{data:[]},
-        sb.from("organizations").select("name,deal_room_limit,subscription_status,trial_ends_at").eq("id",mem.org_id).single(),
+        sb.from("organizations").select("name,deal_room_limit,subscription_status,trial_ends_at,onboarding_seen").eq("id",mem.org_id).single(),
         sb.from("profiles").select("full_name,email,avatar_url,title").eq("id",session.user.id).single(),
       ]);
       if(cancelled)return;
@@ -1405,6 +1461,7 @@ function DealRoom({prospectShareSlug}) {
       setDealRoomLimit(orgRow?.deal_room_limit||10);
       setSubscriptionStatus(orgRow?.subscription_status||"trialing");
       setTrialEndsAt(orgRow?.trial_ends_at||null);
+      setShowWelcome(orgRow?.onboarding_seen===false);
       if(myProfileRow){
         const name=myProfileRow.full_name||myProfileRow.email;
         setMyProfile({name,email:myProfileRow.email,photo:myProfileRow.avatar_url,title:myProfileRow.title,initials:initialsOf(name)});
@@ -1491,6 +1548,9 @@ function DealRoom({prospectShareSlug}) {
 
   const deal=deals.find(d=>d.id===activeId);
   const flash=msg=>{setToast(msg);setTimeout(()=>setToast(null),2800);};
+  // organizations_update RLS (owner-only) already covers this -- whoever can see the welcome
+  // overlay is by definition the org's owner, no new RPC needed.
+  const dismissWelcome=async()=>{await sb.from("organizations").update({onboarding_seen:true}).eq("id",orgId);setShowWelcome(false);};
 
   // Import-only: a spreadsheet's "Reports To" column holds a sibling stakeholder's name,
   // not an id -- ids don't exist until after insert. Matches both self and target by name
@@ -2053,6 +2113,7 @@ select option{background:#fff}
       </div>
     </div>}
     {showSettings&&<SettingsModal orgId={orgId} myUserId={session?.user?.id} myRole={myRole} onClose={()=>setShowSettings(false)}/>}
+    {showWelcome&&viewMode==="rep"&&<WelcomeOverlay onDone={dismissWelcome}/>}
     {showShare&&<ShareModal deal={deal} onClose={()=>setShowShare(false)}/>}
     {showDeleteDeal&&<DeleteDealModal deal={deal} onClose={()=>setShowDeleteDeal(false)} onConfirm={()=>deleteDeal(deal.id)}/>}
     {showEditDeal&&<EditDealModal deal={deal} onClose={()=>setShowEditDeal(false)} onSave={updateDealInfo}/>}
