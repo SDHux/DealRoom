@@ -253,6 +253,26 @@ const LOGO_MARK = (
 const GOAL_PERIODS = ["90 Days","1 Year","Beyond"];
 const PHASES_ALL = ["Value Alignment","Product Demo","Trial Sessions","Business Case","Paper Process"];
 const PHASES_NO_TRIAL = ["Value Alignment","Product Demo","Business Case","Paper Process"];
+// Single source of truth for the 5 fixed sales stages -- folds in what used to be a second,
+// parallel copy of this same key->phase mapping (ProcessTimeline's own stepPhase() ternary).
+// `phase` is the literal string stored on deal_tasks.phase (DB check-constrained, never
+// renamed) -- only `label` is ever org-configurable (organizations.stage_labels, 0024).
+const STAGE_DEFS = [
+  {key:"alignment",desc:"Align on value, requirements, and loop in stakeholders",phase:"Value Alignment"},
+  {key:"demo",desc:"Custom day-in-the-life demo tailored to your workflows",phase:"Product Demo"},
+  {key:"eval",desc:"2-week POC including team testing and integration deep dive",trialOnly:true,phase:"Trial Sessions"},
+  {key:"decision",desc:"Pricing & plans, business case, executive summary and decision",phase:"Business Case"},
+  {key:"formalize",desc:"Order form, T&Cs, legal and compliance",phase:"Paper Process"},
+];
+const DEFAULT_STAGE_LABELS = {alignment:"Alignment",demo:"Product Demo",eval:"Trial / Evaluation",decision:"Decision",formalize:"Formalize"};
+// Literal DB phase string -> whatever this org calls that stage today (custom label, or the
+// default if never renamed). Used anywhere a phase name is *displayed*; filtering/grouping
+// always keeps using the literal phase string itself, never this.
+const phaseDisplayLabel = (phase, stageLabels) => {
+  const def = STAGE_DEFS.find(s => s.phase === phase);
+  if (!def) return phase;
+  return (stageLabels && stageLabels[def.key]) || DEFAULT_STAGE_LABELS[def.key];
+};
 // Phase headers are plain uppercase mono labels in the brand system (no color-coded pill
 // per phase) -- see the mockup's .phase-name, which is deliberately un-colored.
 const STATUS_CFG = {
@@ -381,8 +401,8 @@ const ProspectLogin = ({deal,shareSlug,onSuccess}) => {
   </div>);
 };
 
-const ProcessTimeline = ({deal}) => {
-  const base=[{key:"alignment",label:"Alignment",desc:"Align on value, requirements, and loop in stakeholders"},{key:"demo",label:"Product Demo",desc:"Custom day-in-the-life demo tailored to your workflows"},{key:"eval",label:"Trial / Evaluation",desc:"2-week POC including team testing and integration deep dive",trialOnly:true},{key:"decision",label:"Decision",desc:"Pricing & plans, business case, executive summary and decision"},{key:"formalize",label:"Formalize",desc:"Order form, T&Cs, legal and compliance"}];
+const ProcessTimeline = ({deal,stageLabels}) => {
+  const base=STAGE_DEFS.map(s=>({...s,label:(stageLabels&&stageLabels[s.key])||DEFAULT_STAGE_LABELS[s.key]}));
   const steps=base.filter(s=>!s.trialOnly||deal.includeTrialSessions);
   const phases=deal.includeTrialSessions?PHASES_ALL:PHASES_NO_TRIAL;
   const items=deal.mapItems.filter(t=>phases.includes(t.phase));
@@ -392,9 +412,8 @@ const ProcessTimeline = ({deal}) => {
   // few early completions), and not a strict left-to-right walk either (that failed to
   // show any progress at all when a rep works a later phase, like Product Demo, before
   // an earlier one has any tasks -- a real deal doesn't always fill in phases in order).
-  const stepPhase=s=>s.key==="demo"?"Product Demo":s.key==="eval"?"Trial Sessions":s.key==="decision"?"Business Case":s.key==="formalize"?"Paper Process":"Value Alignment";
   const phaseStatuses=steps.map(s=>{
-    const phTasks=items.filter(t=>t.phase===stepPhase(s));
+    const phTasks=items.filter(t=>t.phase===s.phase);
     if(phTasks.length===0)return "pending";
     return phTasks.every(t=>t.status==="complete")?"complete":"active";
   });
@@ -487,13 +506,13 @@ const DealCreator = ({onSave,onImport,onClose}) => {
   const [importRows,setImportRows]=useState([]);const [importErrors,setImportErrors]=useState([]);const [importFileName,setImportFileName]=useState("");
   const [importHasStakeholderSheet,setImportHasStakeholderSheet]=useState(false);
   const [genError,setGenError]=useState("");
-  const blank={company:"",contact:"",title:"",value:"",closeDate:"",industry:"",logo:"",color:"#1A4FBA",accessCode:"",includeTrialSessions:true,welcomeMsg:"",execSummary:{problem:"",challenges:[],solutions:[]},discovery:{summary:"",corporateStrategy:[],topOutcomes:[],challenges:[],jobsToBeDone:[],primaryUseCase:"",goals:{"90 Days":[],"1 Year":[],"Beyond":[]}},stakeholders:[],mapItems:[],content:[],activityLog:[]};
+  const blank={company:"",contact:"",title:"",value:"",closeDate:"",industry:"",logo:"",color:"#1A4FBA",accessCode:"",includeTrialSessions:false,welcomeMsg:"",execSummary:{problem:"",challenges:[],solutions:[]},discovery:{summary:"",corporateStrategy:[],topOutcomes:[],challenges:[],jobsToBeDone:[],primaryUseCase:"",goals:{"90 Days":[],"1 Year":[],"Beyond":[]}},stakeholders:[],mapItems:[],content:[],activityLog:[]};
   const [draft,setDraft]=useState(blank);
   const downloadTemplate=()=>{
     const wb=XLSX.utils.book_new();
     const dealsSheet=XLSX.utils.aoa_to_sheet([
       IMPORT_TEMPLATE_DEAL_HEADERS,
-      ["Acme Co.","Jane Doe","Renewal","50000","2026-12-31","Tech","","Great to be working with you.","Manual reporting takes hours each week","Slow onboarding; No mobile support; Manual reporting","Automated dashboards; Native mobile app; SSO","Acme Co. is a mid-market distributor modernizing its ops stack.","Consolidate point tools into one platform","Cut manual reporting time; improve forecast accuracy","Fragmented tools; no shared visibility across teams","Running a multi-stakeholder evaluation with a trackable action plan","Confirm budget and technical fit","Full team onboarded and first workflows live","Platform embedded as the team's default workflow"],
+      ["Acme Co.","Jane Doe","Renewal","50000","2026-12-31","Tech","","Welcome,\n\nThis room is for us to stay aligned on the sequence of events as our partnership progresses.\n✓ It will contain all relevant resources\n✓ Outline next steps, tasks and timelines\n✓ Feel free to share this URL to keep colleagues in the loop\n✓ Reach out to me directly to keep key discussions organized\n\nLooking forward to working with you on your goals!","Manual reporting takes hours each week","Slow onboarding; No mobile support; Manual reporting","Automated dashboards; Native mobile app; SSO","Acme Co. is a mid-market distributor modernizing its ops stack.","Consolidate point tools into one platform","Cut manual reporting time; improve forecast accuracy","Fragmented tools; no shared visibility across teams","Running a multi-stakeholder evaluation with a trackable action plan","Confirm budget and technical fit","Full team onboarded and first workflows live","Platform embedded as the team's default workflow"],
     ]);
     const stakeholdersSheet=XLSX.utils.aoa_to_sheet([
       IMPORT_TEMPLATE_STAKEHOLDER_HEADERS,
@@ -634,7 +653,7 @@ const DealCreator = ({onSave,onImport,onClose}) => {
             {[["Company *","company","text"],["Primary Contact","contact","text"],["Deal Title","title","text"],["Deal Value","value","text"],["Close Date","closeDate","date"],["Industry","industry","text"],["Access Code","accessCode","text"]].map(([l,k,t])=>(
               <div key={k}><label style={lbl}>{l}</label><input type={t} style={inp} value={draft[k]||""} onChange={e=>setDraft(p=>({...p,[k]:e.target.value}))}/></div>))}
           </div>
-          <div style={{marginBottom:14}}><label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:P.textSec,cursor:"pointer"}}><input type="checkbox" checked={draft.includeTrialSessions} onChange={e=>setDraft(p=>({...p,includeTrialSessions:e.target.checked}))} style={{width:14,height:14}}/>Include Trial Sessions phase in evaluation journey</label></div>
+          <div style={{marginBottom:14}}><label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:P.textSec,cursor:"pointer"}}><input type="checkbox" checked={draft.includeTrialSessions} onChange={e=>setDraft(p=>({...p,includeTrialSessions:e.target.checked}))} style={{width:14,height:14}}/>Check this box to include a Trial Sessions phase in the sequence of events.</label></div>
           <div style={{marginBottom:14}}><label style={lbl}>Welcome Message</label><textarea value={draft.welcomeMsg||""} onChange={e=>setDraft(p=>({...p,welcomeMsg:e.target.value}))} style={{...inp,height:70,resize:"vertical"}}/></div>
           {draft.discovery.challenges.length>0&&<div style={{background:P.accentLight,border:`1px solid #F0C9B7`,borderRadius:8,padding:"12px 16px",marginBottom:12}}><div style={{fontSize:11,fontWeight:700,color:P.accent,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>AI Extracted — Challenges</div>{draft.discovery.challenges.map((c,i)=><div key={i} style={{fontSize:12,color:P.textSec,marginBottom:3}}>· {c}</div>)}</div>}
           {draft.stakeholders.length>0&&<div style={{background:P.greenBg,border:`1px solid ${P.greenBorder}`,borderRadius:8,padding:"12px 16px",marginBottom:14}}><div style={{fontSize:11,fontWeight:700,color:P.green,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>AI Extracted — Stakeholders ({draft.stakeholders.length})</div>{draft.stakeholders.map(s=><div key={s.id} style={{fontSize:12,color:P.textSec,marginBottom:3}}>· {s.name} — {s.role} ({s.designation})</div>)}</div>}
@@ -853,6 +872,7 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
   const [inviteEmail,setInviteEmail]=useState("");
   const [inviteRole,setInviteRole]=useState("member");
   const [orgName,setOrgName]=useState("");
+  const [stageLabelsDraft,setStageLabelsDraft]=useState(DEFAULT_STAGE_LABELS);
   const [logoUploading,setLogoUploading]=useState(false);
   const [myProfileData,setMyProfileData]=useState(null);
   const [profileDraft,setProfileDraft]=useState({fullName:"",title:"",phone:"",linkedin:""});
@@ -865,7 +885,7 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
     const [{data:mem,error:memErr},{data:inv,error:invErr},{data:orgRow,error:orgErr},{data:myProf,error:myProfErr}]=await Promise.all([
       sb.from("organization_members").select("id,user_id,role,created_at").eq("org_id",orgId),
       sb.from("org_invitations").select("id,email,role,created_at,expires_at").eq("org_id",orgId).is("accepted_at",null),
-      sb.from("organizations").select("name,logo_url,deal_room_limit,subscription_status,trial_ends_at,current_period_end").eq("id",orgId).single(),
+      sb.from("organizations").select("name,logo_url,deal_room_limit,subscription_status,trial_ends_at,current_period_end,stage_labels").eq("id",orgId).single(),
       sb.from("profiles").select("full_name,email,title,phone,linkedin_url,avatar_url").eq("id",myUserId).single(),
     ]);
     if(memErr||invErr||orgErr||myProfErr){setError("Couldn't load settings");setLoading(false);return;}
@@ -879,6 +899,7 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
     setInvites(inv||[]);
     setOrg(orgRow);
     setOrgName(orgRow?.name||"");
+    setStageLabelsDraft({...DEFAULT_STAGE_LABELS,...(orgRow?.stage_labels||{})});
     setMyProfileData(myProf);
     setProfileDraft({fullName:myProf?.full_name||"",title:myProf?.title||"",phone:myProf?.phone||"",linkedin:myProf?.linkedin_url||""});
     setLoading(false);
@@ -901,6 +922,12 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
   const saveOrgName=async()=>{
     const {error:err}=await sb.from("organizations").update({name:orgName}).eq("id",orgId);
     if(err){setError("Couldn't update organization name");return;}
+    setError("");load();
+  };
+
+  const saveStageLabels=async()=>{
+    const {error:err}=await sb.from("organizations").update({stage_labels:stageLabelsDraft}).eq("id",orgId);
+    if(err){setError("Couldn't update stage labels");return;}
     setError("");load();
   };
 
@@ -1034,6 +1061,14 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
               <input type="file" accept="image/*" onChange={e=>e.target.files[0]&&uploadLogo(e.target.files[0])} style={{display:"none"}} disabled={logoUploading}/>
             </label>
           </div>
+          <div style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",margin:"20px 0 8px"}}>Stage Labels</div>
+          <div style={{fontSize:11.5,color:P.textMute,lineHeight:1.5,marginBottom:12}}>Renames each stage everywhere it appears (the Action Plan stepper and its task-group header) -- the 5 stages themselves can't be added to or removed.</div>
+          {STAGE_DEFS.map(s=>(
+            <div key={s.key} style={{marginBottom:10}}>
+              <input value={stageLabelsDraft[s.key]} onChange={e=>setStageLabelsDraft(d=>({...d,[s.key]:e.target.value}))} disabled={myRole!=="owner"} placeholder={DEFAULT_STAGE_LABELS[s.key]} style={{...inp,opacity:myRole!=="owner"?0.6:1}}/>
+            </div>
+          ))}
+          {myRole==="owner"&&<button onClick={saveStageLabels} style={{padding:"9px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Save Stage Labels</button>}
         </div>}
 
         {tab==="profile"&&<div>
@@ -1122,7 +1157,7 @@ const WelcomeOverlay = ({onDone}) => {
 // The deal's share_slug/access_code were being generated and stored (createDeal) but
 // never surfaced anywhere in the UI -- a rep had no way to actually hand a prospect their
 // link without going into Supabase directly. This is that missing affordance.
-const ShareModal = ({deal,onClose}) => {
+const ShareModal = ({deal,onClose,forProspect}) => {
   const [copied,setCopied]=useState(null); // "link" | "code" | null
   const link=`${window.location.origin}/d/${deal.shareSlug}`;
   const copy=(text,which)=>{navigator.clipboard.writeText(text);setCopied(which);setTimeout(()=>setCopied(null),1800);};
@@ -1134,7 +1169,9 @@ const ShareModal = ({deal,onClose}) => {
         <span className="headline" style={{fontSize:18,color:P.text}}>Share this Deal Room</span>
         <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,color:P.textMute,cursor:"pointer"}}>×</button>
       </div>
-      <div style={{fontSize:12.5,color:P.textMute,marginBottom:18,lineHeight:1.5}}>Send your prospect this link and access code. They'll use both to get into their private view of {deal.company}.</div>
+      {/* Same link/code, same mechanism, either audience -- only the framing differs: a rep
+          is sending this out, a prospect is forwarding to their own colleagues. */}
+      <div style={{fontSize:12.5,color:P.textMute,marginBottom:18,lineHeight:1.5}}>{forProspect?`Share this link and access code with your colleagues to keep them in the loop on ${deal.company}.`:`Send your prospect this link and access code. They'll use both to get into their private view of ${deal.company}.`}</div>
       <div style={lbl0}>Prospect Link</div>
       <div style={{...row,marginBottom:14}}>
         <span style={{flex:1,fontSize:12.5,color:P.textSec,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{link}</span>
@@ -1294,6 +1331,7 @@ function DealRoom({prospectShareSlug}) {
   // load (not a one-time "just created" flag) -- so it still shows correctly if the owner
   // closes the tab before dismissing it, on their very next login.
   const [showWelcome,setShowWelcome]=useState(false);
+  const [stageLabels,setStageLabels]=useState(DEFAULT_STAGE_LABELS); // organizations.stage_labels (0024), merged over defaults
   const isLocked=subscriptionStatus==="active"?false:(subscriptionStatus==="trialing"?!(trialEndsAt&&new Date(trialEndsAt)>new Date()):true);
   // Client-side mirror of the enforce_org_not_locked trigger (0018) -- called at the top of
   // every create/edit mutation (not deletes, matching the trigger's own scope) so a locked
@@ -1447,7 +1485,7 @@ function DealRoom({prospectShareSlug}) {
         // rep-profile source for the Welcome tab's AE card, no extra query needed.
         allContributorIds.length?sb.from("profiles").select("id,email,full_name,avatar_url,title,phone,linkedin_url").in("id",allContributorIds):{data:[]},
         allDealIds.length?sb.from("deal_risk_signals").select("*").in("deal_id",allDealIds):{data:[]},
-        sb.from("organizations").select("name,deal_room_limit,subscription_status,trial_ends_at,onboarding_seen").eq("id",mem.org_id).single(),
+        sb.from("organizations").select("name,deal_room_limit,subscription_status,trial_ends_at,onboarding_seen,stage_labels").eq("id",mem.org_id).single(),
         sb.from("profiles").select("full_name,email,avatar_url,title").eq("id",session.user.id).single(),
       ]);
       if(cancelled)return;
@@ -1462,6 +1500,7 @@ function DealRoom({prospectShareSlug}) {
       setSubscriptionStatus(orgRow?.subscription_status||"trialing");
       setTrialEndsAt(orgRow?.trial_ends_at||null);
       setShowWelcome(orgRow?.onboarding_seen===false);
+      setStageLabels({...DEFAULT_STAGE_LABELS,...(orgRow?.stage_labels||{})});
       if(myProfileRow){
         const name=myProfileRow.full_name||myProfileRow.email;
         setMyProfile({name,email:myProfileRow.email,photo:myProfileRow.avatar_url,title:myProfileRow.title,initials:initialsOf(name)});
@@ -1829,6 +1868,9 @@ function DealRoom({prospectShareSlug}) {
   // Simple, clean document: header, then Problem/Key Challenges/Solutions with manual
   // line-wrapping and page breaks -- no library beyond jsPDF itself needed for content
   // this straightforward.
+  // Redesigned per exec-summary-mockup.pdf (approved as final design) -- same underlying
+  // execSummary.problem/challenges/solutions fields as before, only the visual layout and
+  // two section labels ("Business Objective"/"Solution") change.
   const downloadExecSummaryPdf=()=>{
     const {jsPDF}=window.jspdf;
     const doc=new jsPDF();
@@ -1836,20 +1878,95 @@ function DealRoom({prospectShareSlug}) {
     const pageHeight=doc.internal.pageSize.getHeight();
     const margin=20;
     const maxWidth=pageWidth-margin*2;
-    let y=margin;
-    const ensureRoom=lines=>{if(y+lines*6>pageHeight-margin){doc.addPage();y=margin;}};
-    const addHeading=text=>{ensureRoom(10);doc.setFont(undefined,"bold");doc.setFontSize(14);doc.text(text,margin,y);y+=10;doc.setFont(undefined,"normal");doc.setFontSize(11);};
-    const addParagraph=text=>{const lines=doc.splitTextToSize(text,maxWidth);ensureRoom(lines.length);doc.text(lines,margin,y);y+=lines.length*6+6;};
-    const addBullets=items=>{items.forEach(item=>{const lines=doc.splitTextToSize(`•  ${item}`,maxWidth);ensureRoom(lines.length);doc.text(lines,margin,y);y+=lines.length*6+2;});y+=6;};
+    const rightX=pageWidth-margin;
 
-    doc.setFont(undefined,"bold");doc.setFontSize(18);doc.text(deal.company,margin,y);y+=8;
-    doc.setFont(undefined,"normal");doc.setFontSize(11);doc.setTextColor(107,113,120);doc.text(`Executive Summary${deal.title?` — ${deal.title}`:""}`,margin,y);y+=14;
-    doc.setTextColor(37,42,46);
+    // -- Header band --
+    const headerH=44;
+    doc.setFillColor(27,31,35); // P.ink
+    doc.rect(0,0,pageWidth,headerH,"F");
+    doc.setFont(undefined,"normal");doc.setFontSize(9);doc.setTextColor(160,164,168);
+    doc.text("myBivy  ·  provided by SRENE.io",margin,16);
+    doc.setFont(undefined,"bold");doc.setFontSize(20);doc.setTextColor(255,255,255);
+    doc.text(deal.company,margin,30);
 
-    addHeading("The Problem");
-    (deal.execSummary?.problem||"").split("\n\n").forEach(addParagraph);
-    if((deal.execSummary?.challenges||[]).length){addHeading("Key Challenges");addBullets(deal.execSummary.challenges);}
-    if((deal.execSummary?.solutions||[]).length){addHeading("Solutions");addBullets(deal.execSummary.solutions);}
+    // Match the primary contact against stakeholders by name for role/department -- name
+    // alone, no role line, if nothing matches.
+    const matched=(deal.stakeholders||[]).find(s=>s.name&&deal.contact&&s.name.toLowerCase()===deal.contact.toLowerCase());
+    if(deal.contact){
+      doc.setFont(undefined,"bold");doc.setFontSize(8);doc.setTextColor(244,242,237); // P.chalk
+      doc.text("EVALUATION BY:",rightX,14,{align:"right"});
+      doc.setFont(undefined,"bold");doc.setFontSize(12);doc.setTextColor(255,255,255);
+      doc.text(deal.contact,rightX,22,{align:"right"});
+      const roleLine=matched?[matched.role,matched.bu].filter(Boolean).join(", "):"";
+      if(roleLine){
+        doc.setFont(undefined,"normal");doc.setFontSize(9.5);doc.setTextColor(214,212,207);
+        doc.text(roleLine,rightX,29,{align:"right"});
+      }
+    }
+
+    let y=headerH+16;
+    const ensureRoom=h=>{if(y+h>pageHeight-margin){doc.addPage();y=margin;}};
+    const sectionBar=title=>{
+      ensureRoom(16);
+      doc.setFillColor(214,95,60); // P.accent
+      doc.rect(0,y-7,pageWidth,13,"F");
+      doc.setFont(undefined,"bold");doc.setFontSize(11);doc.setTextColor(255,255,255);
+      doc.text(title.toUpperCase(),margin,y+2);
+      y+=20;
+      doc.setTextColor(37,42,46); // P.text
+    };
+    const addParagraph=text=>{
+      doc.setFont(undefined,"normal");doc.setFontSize(10.5);
+      const lines=doc.splitTextToSize(text,maxWidth);
+      ensureRoom(lines.length*5.5);
+      doc.text(lines,margin,y);
+      y+=lines.length*5.5+10;
+    };
+    // Bullet is a drawn dot (terracotta), not a text character, per the mockup.
+    const addDotBullets=items=>{
+      doc.setFont(undefined,"normal");doc.setFontSize(10.5);
+      items.forEach(item=>{
+        const lines=doc.splitTextToSize(item,maxWidth-10);
+        ensureRoom(lines.length*5.5+4);
+        doc.setFillColor(214,95,60);
+        doc.circle(margin+2,y-1.5,1.3,"F");
+        doc.text(lines,margin+10,y);
+        y+=lines.length*5.5+6;
+      });
+      y+=4;
+    };
+
+    sectionBar("Business Objective");
+    addParagraph(deal.execSummary?.problem||"");
+    if((deal.execSummary?.challenges||[]).length){
+      sectionBar("Key Challenges");
+      addDotBullets(deal.execSummary.challenges);
+    }
+    if((deal.execSummary?.solutions||[]).length){
+      sectionBar("Solution");
+      addParagraph(deal.execSummary.solutions.join(", "));
+    }
+
+    // -- Footer: rule, then rep contact block --
+    ensureRoom(30);
+    y+=4;
+    doc.setDrawColor(226,224,218);
+    doc.line(margin,y,pageWidth-margin,y);
+    y+=10;
+    doc.setFont(undefined,"bold");doc.setFontSize(11);doc.setTextColor(37,42,46);
+    doc.text(deal.repProfile?.name||"",margin,y);
+    y+=6;
+    const titleOrgLine=[deal.repProfile?.title,deal.orgName].filter(Boolean).join(", ");
+    if(titleOrgLine){
+      doc.setFont(undefined,"normal");doc.setFontSize(9.5);doc.setTextColor(107,113,120);
+      doc.text(titleOrgLine,margin,y);
+      y+=6;
+    }
+    const contactLine=[deal.repProfile?.email,deal.repProfile?.phone].filter(Boolean).join("  ·  ");
+    if(contactLine){
+      doc.setFont(undefined,"normal");doc.setFontSize(9.5);doc.setTextColor(107,113,120);
+      doc.text(contactLine,margin,y);
+    }
 
     doc.save(`${deal.company.replace(/[^a-zA-Z0-9]+/g,"-")}-executive-summary.pdf`);
   };
@@ -2026,54 +2143,11 @@ select option{background:#fff}
     if(loadingDeals)return <LoadingScreen/>;
   }
 
-  if(!deal){
-    // Signed in, org resolved, but zero deals yet -- the old render tree below assumes a
-    // deal always exists, so this has to be its own early return rather than patched
-    // field-by-field into every downstream reference. This is also the true first-login
-    // moment the welcome overlay is meant for (0023) -- it belongs here, not in the main
-    // deal-view render tree further below, which this branch returns before ever reaching.
-    return <div style={{fontFamily:"'Inter','Segoe UI',sans-serif",minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}}><style>{CSS}</style>
-      <div style={{fontSize:16,fontWeight:700,color:P.text}}>No deal rooms yet</div>
-      <div style={{fontSize:13,color:P.textSec}}>Create your first one to get started.</div>
-      <button onClick={()=>setShowCreator(true)} style={{padding:"10px 20px",background:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>+ New Deal Room</button>
-      {showCreator&&<DealCreator onSave={createDeal} onImport={importDeals} onClose={()=>setShowCreator(false)}/>}
-      {showWelcome&&viewMode==="rep"&&<WelcomeOverlay onDone={dismissWelcome}/>}
-    </div>;
-  }
-
-  const phases=deal.includeTrialSessions?PHASES_ALL:PHASES_NO_TRIAL;
-  const visItems=deal.mapItems.filter(t=>phases.includes(t.phase));
-  const done=visItems.filter(t=>t.status==="complete").length;
-  const pct=Math.round(done/(visItems.length||1)*100);
-
-  if(!prospectShareSlug&&viewMode==="prospect"&&!prospectAuth[activeId]){
-    return <div style={{fontFamily:"'Inter','Segoe UI',sans-serif"}}><style>{CSS}</style>
-      <div style={{display:"flex",minHeight:"100vh"}}>
-        <div style={{width:264,background:P.ink,display:"flex",flexDirection:"column",flexShrink:0,padding:"24px 16px"}}>
-          <div style={{display:"flex",alignItems:"center",gap:10,padding:"4px 4px 22px"}}>
-            <div style={{width:36,height:36,borderRadius:9,background:"rgba(255,255,255,0.08)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><div style={{width:20,height:20}}>{LOGO_MARK}</div></div>
-            <div><div className="headline" style={{fontSize:18,color:"#fff",lineHeight:1}}>myBivy</div><div className="mono" style={{fontSize:9.5,letterSpacing:"0.08em",textTransform:"uppercase",color:"rgba(255,255,255,0.4)",marginTop:3}}>By SRENE</div></div>
-          </div>
-          <div style={{display:"flex",background:"rgba(255,255,255,0.06)",borderRadius:9,padding:3,marginBottom:20}}>
-            {[["rep","Sales Rep"],["prospect","Prospect"]].map(([v,l])=>(
-              <button key={v} onClick={()=>{setViewMode(v);setTab(v==="prospect"?"welcome":"map");}} style={{flex:1,padding:"8px 0",fontSize:12.5,fontWeight:600,color:viewMode===v?"#fff":"rgba(255,255,255,0.5)",background:viewMode===v?P.accent:"transparent",border:"none",borderRadius:7,cursor:"pointer"}}>{l}</button>))}
-          </div>
-          <div className="mono" style={{fontSize:10.5,letterSpacing:"0.08em",textTransform:"uppercase",color:"rgba(255,255,255,0.35)",marginBottom:12,padding:"0 6px"}}>Active Deals</div>
-          {deals.map(d=><div key={d.id} onClick={()=>setActiveId(d.id)} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 8px",borderRadius:8,background:d.id===activeId?"rgba(255,255,255,0.07)":"transparent",marginBottom:2,cursor:"pointer"}}>
-            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13.5,fontWeight:600,color:"#fff",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{d.company}</div><div className="mono" style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}>{d.value}</div></div>
-          </div>)}
-        </div>
-        <ProspectLogin deal={deal} onSuccess={email=>setProspectAuth(p=>({...p,[activeId]:email}))}/>
-      </div>
-    </div>;
-  }
-
-  return <div style={{fontFamily:"'Inter','Segoe UI',sans-serif",background:P.bg,minHeight:"100vh",display:"flex",color:P.text}}>
-    <style>{CSS}</style>
-
-    {/* SIDEBAR -- hidden entirely for a real prospect on a share link: no picker into
-        other org deals, no rep/prospect toggle they could flip to see edit controls. */}
-    {!prospectShareSlug&&<div style={{width:264,background:P.ink,display:"flex",flexDirection:"column",flexShrink:0,padding:"24px 18px"}}>
+  // Hoisted so both the zero-deal empty state and the main deal-view return below can share
+  // the exact same sidebar -- it only ever reads deals/activeId/viewMode/isLocked/
+  // dealRoomLimit/myProfile/myRole/session, nothing that requires the singular `deal` (below)
+  // to exist. See the sidebar's own inline comment for why it's hidden for a real prospect.
+  const sidebarJsx = !prospectShareSlug && <div style={{width:264,background:P.ink,display:"flex",flexDirection:"column",flexShrink:0,padding:"24px 18px"}}>
       <div style={{display:"flex",alignItems:"center",gap:10,padding:"4px 4px 22px"}}>
         <div style={{width:36,height:36,borderRadius:9,background:"rgba(255,255,255,0.08)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><div style={{width:20,height:20}}>{LOGO_MARK}</div></div>
         <div><div className="headline" style={{fontSize:19,color:"#fff",lineHeight:1}}>myBivy</div><div className="mono" style={{fontSize:9.5,letterSpacing:"0.08em",textTransform:"uppercase",color:"rgba(255,255,255,0.4)",marginTop:3}}>By SRENE</div></div>
@@ -2114,10 +2188,67 @@ select option{background:#fff}
         {(myRole==="owner"||myRole==="admin")&&<button onClick={()=>setShowSettings(true)} title="Team & Settings" style={{background:"none",border:"none",color:"rgba(255,255,255,0.75)",fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",gap:5}}><span style={{fontSize:21}}>⚙</span>Settings</button>}
         <button onClick={()=>sb.auth.signOut()} title="Sign out" style={{background:"none",border:"none",color:"rgba(255,255,255,0.5)",fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0}}>Sign out</button>
       </div>
-    </div>}
+    </div>;
+
+  if(!deal){
+    // Signed in, org resolved, but zero deals yet -- the old render tree below assumes a
+    // deal always exists, so this has to be its own early return rather than patched
+    // field-by-field into every downstream reference. This is also the true first-login
+    // moment the welcome overlay is meant for (0023) -- it belongs here, not in the main
+    // deal-view render tree further below, which this branch returns before ever reaching.
+    // Renders the same sidebarJsx as the main view (not a bare centered message) so a
+    // first-time user actually sees they're inside the app -- myBivy branding, their (empty)
+    // Active Deals list, settings -- not a blank page with no chrome.
+    return <div style={{fontFamily:"'Inter','Segoe UI',sans-serif",background:P.bg,minHeight:"100vh",display:"flex",color:P.text}}><style>{CSS}</style>
+      {sidebarJsx}
+      <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16,padding:24}}>
+        <div style={{fontSize:16,fontWeight:700,color:P.text}}>No deal rooms yet</div>
+        <div style={{fontSize:13,color:P.textSec,maxWidth:420,textAlign:"center",lineHeight:1.6}}>A bivy is a mutual success planning workspace you share with a prospect, next steps, shared content, and action items you both stay aligned on.</div>
+        <button onClick={()=>setShowCreator(true)} style={{padding:"10px 20px",background:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>+ New Deal Room</button>
+      </div>
+      {showCreator&&<DealCreator onSave={createDeal} onImport={importDeals} onClose={()=>setShowCreator(false)}/>}
+      {showSettings&&<SettingsModal orgId={orgId} myUserId={session?.user?.id} myRole={myRole} onClose={()=>setShowSettings(false)}/>}
+      {showWelcome&&viewMode==="rep"&&<WelcomeOverlay onDone={dismissWelcome}/>}
+    </div>;
+  }
+
+  const phases=deal.includeTrialSessions?PHASES_ALL:PHASES_NO_TRIAL;
+  const visItems=deal.mapItems.filter(t=>phases.includes(t.phase));
+  const done=visItems.filter(t=>t.status==="complete").length;
+  const pct=Math.round(done/(visItems.length||1)*100);
+
+  if(!prospectShareSlug&&viewMode==="prospect"&&!prospectAuth[activeId]){
+    return <div style={{fontFamily:"'Inter','Segoe UI',sans-serif"}}><style>{CSS}</style>
+      <div style={{display:"flex",minHeight:"100vh"}}>
+        <div style={{width:264,background:P.ink,display:"flex",flexDirection:"column",flexShrink:0,padding:"24px 16px"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,padding:"4px 4px 22px"}}>
+            <div style={{width:36,height:36,borderRadius:9,background:"rgba(255,255,255,0.08)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><div style={{width:20,height:20}}>{LOGO_MARK}</div></div>
+            <div><div className="headline" style={{fontSize:18,color:"#fff",lineHeight:1}}>myBivy</div><div className="mono" style={{fontSize:9.5,letterSpacing:"0.08em",textTransform:"uppercase",color:"rgba(255,255,255,0.4)",marginTop:3}}>By SRENE</div></div>
+          </div>
+          <div style={{display:"flex",background:"rgba(255,255,255,0.06)",borderRadius:9,padding:3,marginBottom:20}}>
+            {[["rep","Sales Rep"],["prospect","Prospect"]].map(([v,l])=>(
+              <button key={v} onClick={()=>{setViewMode(v);setTab(v==="prospect"?"welcome":"map");}} style={{flex:1,padding:"8px 0",fontSize:12.5,fontWeight:600,color:viewMode===v?"#fff":"rgba(255,255,255,0.5)",background:viewMode===v?P.accent:"transparent",border:"none",borderRadius:7,cursor:"pointer"}}>{l}</button>))}
+          </div>
+          <div className="mono" style={{fontSize:10.5,letterSpacing:"0.08em",textTransform:"uppercase",color:"rgba(255,255,255,0.35)",marginBottom:12,padding:"0 6px"}}>Active Deals</div>
+          {deals.map(d=><div key={d.id} onClick={()=>setActiveId(d.id)} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 8px",borderRadius:8,background:d.id===activeId?"rgba(255,255,255,0.07)":"transparent",marginBottom:2,cursor:"pointer"}}>
+            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13.5,fontWeight:600,color:"#fff",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{d.company}</div><div className="mono" style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}>{d.value}</div></div>
+          </div>)}
+        </div>
+        <ProspectLogin deal={deal} onSuccess={email=>setProspectAuth(p=>({...p,[activeId]:email}))}/>
+      </div>
+    </div>;
+  }
+
+  return <div style={{fontFamily:"'Inter','Segoe UI',sans-serif",background:P.bg,minHeight:"100vh",display:"flex",color:P.text}}>
+    <style>{CSS}</style>
+
+    {/* SIDEBAR -- hidden entirely for a real prospect on a share link: no picker into
+        other org deals, no rep/prospect toggle they could flip to see edit controls. Shared
+        with the zero-deal empty state above via the hoisted sidebarJsx. */}
+    {sidebarJsx}
     {showSettings&&<SettingsModal orgId={orgId} myUserId={session?.user?.id} myRole={myRole} onClose={()=>setShowSettings(false)}/>}
     {showWelcome&&viewMode==="rep"&&<WelcomeOverlay onDone={dismissWelcome}/>}
-    {showShare&&<ShareModal deal={deal} onClose={()=>setShowShare(false)}/>}
+    {showShare&&<ShareModal deal={deal} onClose={()=>setShowShare(false)} forProspect={viewMode==="prospect"}/>}
     {showDeleteDeal&&<DeleteDealModal deal={deal} onClose={()=>setShowDeleteDeal(false)} onConfirm={()=>deleteDeal(deal.id)}/>}
     {showEditDeal&&<EditDealModal deal={deal} onClose={()=>setShowEditDeal(false)} onSave={updateDealInfo}/>}
 
@@ -2230,7 +2361,7 @@ select option{background:#fff}
                 </div>
                 <div style={{display:"flex",gap:10}}>
                   {deal.repProfile.linkedin&&<a href={deal.repProfile.linkedin} target="_blank" rel="noopener noreferrer" style={{padding:"7px 16px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:"#0A66C2",fontSize:12,fontWeight:700,textDecoration:"none",display:"flex",alignItems:"center",gap:5}}>{LI_SVG}LinkedIn</a>}
-                  <a href={`mailto:${deal.repProfile.email}`} style={{padding:"7px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,textDecoration:"none"}}>Reply</a>
+                  <button onClick={()=>setShowShare(true)} style={{padding:"7px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Share Room</button>
                 </div>
               </div>
             </div>}
@@ -2279,12 +2410,12 @@ select option{background:#fff}
 
           {/* ACTION PLAN */}
           {tab==="map"&&<div>
-            <ProcessTimeline deal={deal}/>
+            <ProcessTimeline deal={deal} stageLabels={stageLabels}/>
             {phases.map(phase=>{
               const items=visItems.filter(t=>t.phase===phase);
               return <div key={phase} style={{marginBottom:20}}>
                 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 4px"}}>
-                  <span className="mono" style={{fontSize:11.5,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",color:P.textMute}}>{phase}</span>
+                  <span className="mono" style={{fontSize:11.5,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",color:P.textMute}}>{phaseDisplayLabel(phase,stageLabels)}</span>
                   <span style={{fontSize:12.5,color:P.textMute}}>{items.filter(t=>t.status==="complete").length} of {items.length} complete</span>
                 </div>
                 <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:12,overflow:"hidden",boxShadow:"0 1px 2px rgba(27,31,35,0.05), 0 12px 32px -12px rgba(27,31,35,0.16)"}}>
