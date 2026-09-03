@@ -2029,12 +2029,15 @@ select option{background:#fff}
   if(!deal){
     // Signed in, org resolved, but zero deals yet -- the old render tree below assumes a
     // deal always exists, so this has to be its own early return rather than patched
-    // field-by-field into every downstream reference.
+    // field-by-field into every downstream reference. This is also the true first-login
+    // moment the welcome overlay is meant for (0023) -- it belongs here, not in the main
+    // deal-view render tree further below, which this branch returns before ever reaching.
     return <div style={{fontFamily:"'Inter','Segoe UI',sans-serif",minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}}><style>{CSS}</style>
       <div style={{fontSize:16,fontWeight:700,color:P.text}}>No deal rooms yet</div>
       <div style={{fontSize:13,color:P.textSec}}>Create your first one to get started.</div>
       <button onClick={()=>setShowCreator(true)} style={{padding:"10px 20px",background:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>+ New Deal Room</button>
       {showCreator&&<DealCreator onSave={createDeal} onImport={importDeals} onClose={()=>setShowCreator(false)}/>}
+      {showWelcome&&viewMode==="rep"&&<WelcomeOverlay onDone={dismissWelcome}/>}
     </div>;
   }
 
