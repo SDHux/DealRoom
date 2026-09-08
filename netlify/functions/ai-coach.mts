@@ -65,7 +65,10 @@ export default async (req: Request, context: Context) => {
     }
 
     const data = await r.json();
-    console.log("ai-coach: content shape:", JSON.stringify(data.content)); // TEMP diagnostic -- remove once confirmed
+    // TEMP diagnostic -- remove once confirmed. Block types + stop_reason only (not the
+    // full content dump), so nothing gets cut off by the log panel's width -- a truncated
+    // thinking-block signature made the previous version unreadable.
+    console.log("ai-coach: block types:", JSON.stringify((data.content || []).map((b: any) => b.type)), "stop_reason:", data.stop_reason);
     const text = data?.content?.[0]?.text || "";
     return new Response(JSON.stringify({ text }), {
       headers: { "Content-Type": "application/json" },
