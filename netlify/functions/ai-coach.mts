@@ -65,6 +65,7 @@ export default async (req: Request, context: Context) => {
     }
 
     const data = await r.json();
+    console.log("ai-coach: content shape:", JSON.stringify(data.content)); // TEMP diagnostic -- remove once confirmed
     const text = data?.content?.[0]?.text || "";
     return new Response(JSON.stringify({ text }), {
       headers: { "Content-Type": "application/json" },
