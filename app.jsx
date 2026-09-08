@@ -939,7 +939,11 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
     const {error:upErr}=await sb.storage.from("org-logos").upload(path,file,{upsert:true,contentType:file.type});
     if(upErr){setError("Couldn't upload logo");setLogoUploading(false);return;}
     const {data:{publicUrl}}=sb.storage.from("org-logos").getPublicUrl(path);
-    const {error:rpcErr}=await sb.rpc("set_org_logo",{p_org_id:orgId,p_logo_url:publicUrl});
+    // upsert:true replaces the file at this same fixed path -- the URL itself never
+    // changes, so without a cache-buster the browser just keeps showing whatever it
+    // already had cached at that address on re-upload.
+    const bustedUrl=`${publicUrl}?t=${Date.now()}`;
+    const {error:rpcErr}=await sb.rpc("set_org_logo",{p_org_id:orgId,p_logo_url:bustedUrl});
     if(rpcErr){setError("Couldn't save logo");setLogoUploading(false);return;}
     setLogoUploading(false);load();
   };
@@ -960,7 +964,9 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
     const {error:upErr}=await sb.storage.from("avatars").upload(path,file,{upsert:true,contentType:file.type});
     if(upErr){setError("Couldn't upload photo");setAvatarUploading(false);return;}
     const {data:{publicUrl}}=sb.storage.from("avatars").getPublicUrl(path);
-    const {error:updErr}=await sb.from("profiles").update({avatar_url:publicUrl}).eq("id",myUserId);
+    // Same fixed-path cache-busting fix as uploadLogo above.
+    const bustedUrl=`${publicUrl}?t=${Date.now()}`;
+    const {error:updErr}=await sb.from("profiles").update({avatar_url:bustedUrl}).eq("id",myUserId);
     if(updErr){setError("Couldn't save photo");setAvatarUploading(false);return;}
     setAvatarUploading(false);load();
   };
