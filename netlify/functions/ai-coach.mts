@@ -65,11 +65,12 @@ export default async (req: Request, context: Context) => {
     }
 
     const data = await r.json();
-    // TEMP diagnostic -- remove once confirmed. Block types + stop_reason only (not the
-    // full content dump), so nothing gets cut off by the log panel's width -- a truncated
-    // thinking-block signature made the previous version unreadable.
-    console.log("ai-coach: block types:", JSON.stringify((data.content || []).map((b: any) => b.type)), "stop_reason:", data.stop_reason);
-    const text = data?.content?.[0]?.text || "";
+    // Confirmed via Netlify function logs (2026-09-08): claude-sonnet-5 emits a leading
+    // thinking block ahead of the text block ([`"thinking"`, `"text"`], stop_reason
+    // end_turn), so content[0] is not reliably the answer -- find the text block by type
+    // instead of assuming its position.
+    const textBlock = data?.content?.find((b: any) => b.type === "text");
+    const text = textBlock?.text || "";
     return new Response(JSON.stringify({ text }), {
       headers: { "Content-Type": "application/json" },
     });
