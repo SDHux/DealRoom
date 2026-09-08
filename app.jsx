@@ -436,7 +436,7 @@ const ProcessTimeline = ({deal,stageLabels}) => {
   );
 };
 
-const OrgNode = ({s,all,depth=0}) => {
+const OrgNode = ({s,all,depth=0,viewMode}) => {
   const dc=DESIG_CFG[s.designation]||DESIG_CFG.influencer;
   const children=all.filter(x=>x.reportsTo===s.id);
   return (<div style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
@@ -444,13 +444,15 @@ const OrgNode = ({s,all,depth=0}) => {
       <div style={{width:38,height:38,borderRadius:"50%",background:P.accentLight,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:800,color:P.accent,margin:"0 auto 8px"}}>{s.initials}</div>
       <div style={{fontSize:12,fontWeight:700,color:P.text}}>{s.name}</div>
       <div style={{fontSize:10,color:P.textSec,marginTop:2,marginBottom:6}}>{s.role}</div>
-      <Badge small label={dc.label} color={dc.color} bg={dc.bg} border={dc.border}/>
+      {/* Internal sales classification -- never shown to a prospect, even about themselves
+          or a colleague. */}
+      {viewMode==="rep"&&<Badge small label={dc.label} color={dc.color} bg={dc.bg} border={dc.border}/>}
       <a href={s.linkedin} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{display:"flex",alignItems:"center",justifyContent:"center",gap:4,marginTop:8,fontSize:10,color:"#0A66C2",textDecoration:"none",fontWeight:600}}>{LI_SVG}LinkedIn</a>
     </div>
     {children.length>0&&<div style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
       <div style={{width:2,height:22,background:P.borderDark}}/>
       <div style={{display:"flex",gap:20}}>
-        {children.map(c=><div key={c.id} style={{display:"flex",flexDirection:"column",alignItems:"center"}}><div style={{width:2,height:22,background:P.borderDark}}/><OrgNode s={c} all={all} depth={depth+1}/></div>)}
+        {children.map(c=><div key={c.id} style={{display:"flex",flexDirection:"column",alignItems:"center"}}><div style={{width:2,height:22,background:P.borderDark}}/><OrgNode s={c} all={all} depth={depth+1} viewMode={viewMode}/></div>)}
       </div>
     </div>}
   </div>);
@@ -2581,14 +2583,14 @@ select option{background:#fff}
             {orgView?<div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:12,padding:"32px 24px",overflowX:"auto"}}>
               <div style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:24}}>Organizational Structure</div>
               <div style={{display:"flex",gap:40,justifyContent:"center",minWidth:"fit-content"}}>
-                {deal.stakeholders.filter(s=>!s.reportsTo||!deal.stakeholders.find(x=>x.id===s.reportsTo)).map(root=><OrgNode key={root.id} s={root} all={deal.stakeholders} depth={0}/>)}
+                {deal.stakeholders.filter(s=>!s.reportsTo||!deal.stakeholders.find(x=>x.id===s.reportsTo)).map(root=><OrgNode key={root.id} s={root} all={deal.stakeholders} depth={0} viewMode={viewMode}/>)}
               </div>
             </div>:<div style={{display:"grid",gap:10}}>
               {deal.stakeholders.map(s=>{const dc=DESIG_CFG[s.designation]||DESIG_CFG.influencer;const ec=s.engagement>60?P.green:s.engagement>30?P.amber:P.red;return(
                 <div key={s.id} style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:12,padding:"18px 20px",display:"flex",alignItems:"center",gap:16}}>
                   <div className="headline" style={{width:48,height:48,borderRadius:"50%",background:P.accentLight,border:`2px solid ${P.ropeBorder}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,color:P.accentMid,flexShrink:0}}>{s.initials}</div>
                   <div style={{flex:1}}>
-                    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}><span style={{fontSize:15,fontWeight:700,color:P.text}}>{s.name}</span><Badge label={dc.label} color={dc.color} bg={dc.bg} border={dc.border}/>{s.approvalRequired&&<Badge label="Approval Required" color={P.red} bg={P.redBg} border={P.redBorder}/>}</div>
+                    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}><span style={{fontSize:15,fontWeight:700,color:P.text}}>{s.name}</span>{viewMode==="rep"&&<Badge label={dc.label} color={dc.color} bg={dc.bg} border={dc.border}/>}{s.approvalRequired&&<Badge label="Approval Required" color={P.red} bg={P.redBg} border={P.redBorder}/>}</div>
                     <div style={{fontSize:12,color:P.textSec,marginBottom:3}}>{s.role} · <span style={{color:P.textMute}}>{s.bu}</span></div>
                     {s.docsViewed.length>0&&<div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:8}}><span style={{fontSize:10,color:P.textMute,fontWeight:600,marginTop:2}}>Viewed:</span>{s.docsViewed.map((d,i)=><span key={i} style={{fontSize:10,padding:"1px 7px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:10,color:P.textSec}}>{d}</span>)}</div>}
                     <div style={{display:"flex",alignItems:"center",gap:16}}>
