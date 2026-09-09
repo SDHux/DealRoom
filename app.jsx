@@ -52,6 +52,17 @@ const parseGoogleDocUrl = url => {
   return { fileType, embedUrl };
 };
 
+// Validates a Zoom cloud-recording share link (zoom.us/rec/share/... and the subdomain
+// variants Zoom uses, e.g. us02web.zoom.us/rec/...). Unlike parseGoogleDocUrl there's no URL
+// to build -- recording links open directly (the 'link' pattern), not embed, since Zoom's
+// playback pages set X-Frame-Options and refuse to render inside an iframe. Returns null if
+// the URL doesn't match.
+const parseZoomRecordingUrl = url => {
+  const trimmed = (url || "").trim();
+  if (!/^https:\/\/(?:[a-zA-Z0-9-]+\.)?zoom\.us\/rec\/(share|play)\//.test(trimmed)) return null;
+  return { url: trimmed };
+};
+
 // Transforms a Supabase `deals` row (with nested stakeholders/deal_tasks/documents from a
 // PostgREST embed, or the equivalent shape from the get_deal_for_prospect RPC) into the
 // exact camelCase shape the render tree below already expects. Keeping this as one pure
@@ -307,7 +318,35 @@ const DESIG_CFG = {
   influencer:{label:"Influencer",color:P.purple,bg:P.purpleBg,border:P.purpleBorder},
   blocker:{label:"Blocker",color:P.amber,bg:P.amberBg,border:P.amberDot},
 };
-const FILE_ICON = {pptx:{icon:"▤",c:"#C55A11"},xlsx:{icon:"⊞",c:"#1D6F42"},pdf:{icon:"▪",c:"#C00000"},docx:{icon:"≡",c:"#2B579A"},image:{icon:"▧",c:"#7C3AED"},link:{icon:"⌘",c:"#6366F1"}};
+const FILE_ICON = {pptx:{icon:"▤",c:"#C55A11"},xlsx:{icon:"⊞",c:"#1D6F42"},pdf:{icon:"▪",c:"#C00000"},docx:{icon:"≡",c:"#2B579A"},image:{icon:"▧",c:"#7C3AED"},link:{icon:"⌘",c:"#6366F1"},video:{icon:"▶",c:"#2D8CFF"}};
+
+// Small identification-only brand marks for the Content-tab toolbar buttons (not full logos
+// with wordmarks) -- inlined as raw SVG since this app loads no icon library. Google's is the
+// standard 4-color "G" (official brand colors). Zoom's is their official app-icon mark (blue
+// rounded-square with the white abstract "Z"/arrow shape); it's a rounded-square glyph rather
+// than literally camera-shaped, but it's what Zoom's own brand/press assets use to represent
+// the product, sourced from a maintained third-party logo collection, not fabricated from memory.
+const GoogleDocIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 256 262" xmlns="http://www.w3.org/2000/svg">
+    <path d="M255.878,133.451 C255.878,122.717 255.007,114.884 253.122,106.761 L130.55,106.761 L130.55,155.209 L202.497,155.209 C201.047,167.249 193.214,185.381 175.807,197.565 L175.563,199.187 L214.318,229.21 L217.003,229.478 C241.662,206.704 255.878,173.196 255.878,133.451" fill="#4285F4"/>
+    <path d="M130.55,261.1 C165.798,261.1 195.389,249.495 217.003,229.478 L175.807,197.565 C164.783,205.253 149.987,210.62 130.55,210.62 C96.027,210.62 66.726,187.847 56.281,156.37 L54.75,156.5 L14.452,187.687 L13.925,189.152 C35.393,231.798 79.49,261.1 130.55,261.1" fill="#34A853"/>
+    <path d="M56.281,156.37 C53.525,148.247 51.93,139.543 51.93,130.55 C51.93,121.556 53.525,112.853 56.136,104.73 L56.063,103 L15.26,71.312 L13.925,71.947 C5.077,89.644 0,109.517 0,130.55 C0,151.583 5.077,171.455 13.925,189.152 L56.281,156.37" fill="#FBBC05"/>
+    <path d="M130.55,50.479 C155.064,50.479 171.6,61.068 181.029,69.917 L217.873,33.943 C195.245,12.91 165.798,0 130.55,0 C79.49,0 35.393,29.301 13.925,71.947 L56.136,104.73 C66.726,73.253 96.027,50.479 130.55,50.479" fill="#EB4335"/>
+  </svg>
+);
+const ZoomIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient x1="23.666%" y1="95.6118%" x2="76.334%" y2="4.3882%" id="zoomIconGrad">
+        <stop stopColor="#0845BF" offset="0%"/>
+        <stop stopColor="#0B5CFF" offset="50%"/>
+        <stop stopColor="#4F90EE" offset="100%"/>
+      </linearGradient>
+    </defs>
+    <path d="M256,128 C256,141.568 254.976,155.136 252.672,168.192 C245.76,211.456 211.456,245.76 168.192,252.672 C155.136,254.976 141.568,256 128,256 C114.432,256 100.864,254.976 87.808,252.672 C44.544,245.76 10.24,211.456 3.328,168.192 C1.024,155.136 0,141.568 0,128 C0,114.432 1.024,100.864 3.328,87.808 C10.24,44.544 44.544,10.24 87.808,3.328 C100.864,1.024 114.432,0 128,0 C141.568,0 155.136,1.024 168.192,3.328 C211.456,10.24 245.76,44.544 252.672,87.808 C254.976,100.864 256,114.432 256,128 Z" fill="url(#zoomIconGrad)"/>
+    <path d="M204.032,207.872 L75.008,207.872 C66.56,207.872 58.368,203.264 54.528,195.84 C49.92,187.136 51.712,176.64 58.624,169.728 L148.48,79.872 L83.968,79.872 C66.304,79.872 51.968,65.536 51.968,47.872 L170.752,47.872 C179.2,47.872 187.392,52.48 191.232,59.904 C195.84,68.608 194.048,79.104 187.136,86.016 L97.536,176.128 L172.032,176.128 C189.696,176.128 204.032,190.208 204.032,207.872 Z" fill="#FFFFFF"/>
+  </svg>
+);
 // Mirrors the deal-documents bucket's allowed_mime_types (0012_deal_documents.sql) -- this
 // mapping is just for instant client-side feedback, the bucket itself is the real gate.
 const ALLOWED_DOC_MIME = {
@@ -1272,11 +1311,39 @@ const AddEmbedModal = ({onSave,onClose}) => {
   return (<div style={{position:"fixed",inset:0,background:"rgba(27,31,35,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
     <div style={{background:P.surface,borderRadius:16,width:440,padding:"24px 24px 28px",boxShadow:"0 24px 64px rgba(0,0,0,0.16)"}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:18}}>
-        <span className="headline" style={{fontSize:18,color:P.text}}>Add Link</span>
+        <span className="headline" style={{fontSize:18,color:P.text}}>Add Google Doc</span>
         <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,color:P.textMute,cursor:"pointer"}}>×</button>
       </div>
       <div style={{marginBottom:14}}><label style={lbl}>Google Slides / Docs / Sheets link</label>
         <input value={url} onChange={e=>handleUrlChange(e.target.value)} placeholder="https://docs.google.com/presentation/d/.../edit?usp=sharing" style={inp}/></div>
+      <div style={{marginBottom:16}}><label style={lbl}>Title</label>
+        <input value={title} onChange={e=>setTitle(e.target.value)} style={inp}/></div>
+      {error&&<div style={{fontSize:12,color:P.red,marginBottom:14}}>{error}</div>}
+      <button onClick={submit} style={{width:"100%",padding:11,background:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>Add</button>
+    </div>
+  </div>);
+};
+
+const AddRecordingModal = ({onSave,onClose}) => {
+  const [url,setUrl]=useState("");
+  const [title,setTitle]=useState("Untitled Recording");
+  const [error,setError]=useState("");
+  const submit=()=>{
+    const parsed=parseZoomRecordingUrl(url);
+    if(!parsed){setError("That doesn't look like a Zoom recording link. Use the URL from Zoom's Share button on the recording.");return;}
+    if(!title.trim()){setError("Give it a title.");return;}
+    onSave({title:title.trim(),url:parsed.url});
+  };
+  const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:8,padding:"10px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
+  const lbl={fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:6};
+  return (<div style={{position:"fixed",inset:0,background:"rgba(27,31,35,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
+    <div style={{background:P.surface,borderRadius:16,width:440,padding:"24px 24px 28px",boxShadow:"0 24px 64px rgba(0,0,0,0.16)"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:18}}>
+        <span className="headline" style={{fontSize:18,color:P.text}}>Add Recording</span>
+        <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,color:P.textMute,cursor:"pointer"}}>×</button>
+      </div>
+      <div style={{marginBottom:14}}><label style={lbl}>Zoom recording link</label>
+        <input value={url} onChange={e=>{setUrl(e.target.value);setError("");}} placeholder="https://zoom.us/rec/share/..." style={inp}/></div>
       <div style={{marginBottom:16}}><label style={lbl}>Title</label>
         <input value={title} onChange={e=>setTitle(e.target.value)} style={inp}/></div>
       {error&&<div style={{fontSize:12,color:P.red,marginBottom:14}}>{error}</div>}
@@ -1464,6 +1531,7 @@ function DealRoom({prospectShareSlug}) {
   const [showCreator,setShowCreator]=useState(false);
   const [showShare,setShowShare]=useState(false);
   const [showAddEmbed,setShowAddEmbed]=useState(false);
+  const [showAddRecording,setShowAddRecording]=useState(false);
   const [showEmbedDoc,setShowEmbedDoc]=useState(null); // the content item currently open in EmbedModal, or null
   const [showDeleteDeal,setShowDeleteDeal]=useState(false);
   const [showEditDeal,setShowEditDeal]=useState(false);
@@ -2178,6 +2246,22 @@ function DealRoom({prospectShareSlug}) {
     flash("Link added");
   };
 
+  // "+ Recording" counterpart to addEmbedDocument -- Zoom recording pages set
+  // X-Frame-Options and refuse to embed, so this reuses the plain 'link' storage shape
+  // (raw URL in storage_path, is_embed:false) instead of the embed_url/iframe path above.
+  const addRecordingDocument=async({title,url})=>{
+    if(guardLocked())return;
+    const {data,error:insErr}=await sb.from("documents").insert({
+      deal_id:deal.id,created_by:session.user.id,title,file_type:"video",
+      category:"General",is_embed:false,storage_path:url,
+    }).select().single();
+    if(insErr||!data){flash("Couldn't save recording");return;}
+    const mapped={id:data.id,title:data.title,type:data.file_type,uploaded:shortDate(data.created_at),category:data.category,storagePath:data.storage_path,isEmbed:false,views:0,viewers:[],lastViewed:"Not yet viewed"};
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,content:[...d.content,mapped]}));
+    setShowAddRecording(false);
+    flash("Recording added");
+  };
+
   // Signed URL minted on demand (private bucket, so there's no permanent public URL to
   // store) -- the necessary difference from the org-logos public-bucket flow in
   // SettingsModal, which bakes one URL in at upload time.
@@ -2200,7 +2284,7 @@ function DealRoom({prospectShareSlug}) {
   const openDocument=async f=>{
     if(f.isEmbed){setShowEmbedDoc(f);logDocumentView(f);return;}
     if(!f.storagePath){flash("File not available");return;}
-    if(f.type==="link"){window.open(f.storagePath,"_blank","noopener");logDocumentView(f);return;}
+    if(f.type==="link"||f.type==="video"){window.open(f.storagePath,"_blank","noopener");logDocumentView(f);return;}
     const {data,error}=await sb.storage.from("deal-documents").createSignedUrl(f.storagePath,300);
     if(error||!data){flash("Couldn't open file");return;}
     window.open(data.signedUrl,"_blank","noopener");
@@ -2361,6 +2445,7 @@ select option{background:#fff}
     {showWelcome&&viewMode==="rep"&&<WelcomeOverlay onDone={dismissWelcome}/>}
     {showShare&&<ShareModal deal={deal} onClose={()=>setShowShare(false)} forProspect={viewMode==="prospect"}/>}
     {showAddEmbed&&<AddEmbedModal onSave={addEmbedDocument} onClose={()=>setShowAddEmbed(false)}/>}
+    {showAddRecording&&<AddRecordingModal onSave={addRecordingDocument} onClose={()=>setShowAddRecording(false)}/>}
     {showEmbedDoc&&<EmbedModal doc={showEmbedDoc} onClose={()=>setShowEmbedDoc(null)}/>}
     {showDeleteDeal&&<DeleteDealModal deal={deal} onClose={()=>setShowDeleteDeal(false)} onConfirm={()=>deleteDeal(deal.id)}/>}
     {showEditDeal&&<EditDealModal deal={deal} onClose={()=>setShowEditDeal(false)} onSave={updateDealInfo}/>}
@@ -2684,8 +2769,8 @@ select option{background:#fff}
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
               <div style={{fontSize:13,color:P.textSec}}>{deal.content.length} files · {deal.content.reduce((a,c)=>a+c.views,0)} total views</div>
               {viewMode==="rep"&&<div style={{display:"flex",gap:8}}>
-                <button onClick={()=>runAI("email")} style={{padding:"6px 12px",border:`1px solid ${P.border}`,borderRadius:6,background:"none",color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer"}}>✦ Draft Follow-up</button>
-                <button onClick={()=>setShowAddEmbed(true)} style={{padding:"6px 14px",border:`1px solid ${P.border}`,borderRadius:6,background:"none",color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer"}}>+ Add Link</button>
+                <button onClick={()=>setShowAddEmbed(true)} style={{display:"flex",alignItems:"center",gap:7,padding:"6px 14px",border:`1px solid ${P.border}`,borderRadius:6,background:"none",color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer"}}><GoogleDocIcon/>+ Google Doc</button>
+                <button onClick={()=>setShowAddRecording(true)} style={{display:"flex",alignItems:"center",gap:7,padding:"6px 14px",border:`1px solid ${P.border}`,borderRadius:6,background:"none",color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer"}}><ZoomIcon/>+ Recording</button>
                 <label style={{padding:"6px 14px",background:P.accent,borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>+ Add File
                   <input type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,image/*" onChange={e=>e.target.files[0]&&uploadDocument(e.target.files[0])} style={{display:"none"}}/>
                 </label>
