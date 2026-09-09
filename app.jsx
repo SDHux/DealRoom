@@ -523,7 +523,7 @@ const splitListCell=v=>String(v||"").split(";").map(s=>s.trim()).filter(Boolean)
 const IMPORT_TEMPLATE_DEAL_HEADERS=["Company","Contact","Title","Value","Close Date","Industry","Access Code","Welcome Message","Problem","Challenges","Solutions","Discovery - Summary","Discovery - Corporate Strategy","Discovery - Outcomes","Discovery - Challenges","Discovery - Primary Use Case","Goals - 90 Days","Goals - 1 Year","Goals - Beyond"];
 const IMPORT_TEMPLATE_STAKEHOLDER_HEADERS=["Company","Name","Role","Designation","Business Unit","Email","LinkedIn","Approval Required","Engagement Score (1-100)","Reports To"];
 
-const DealCreator = ({onSave,onImport,onClose}) => {
+const DealCreator = ({onSave,onImport,onClose,stageLabels}) => {
   const [step,setStep]=useState(1);const [mode,setMode]=useState(null);const [tx,setTx]=useState("");const [loading,setLoading]=useState(false);
   const [importRows,setImportRows]=useState([]);const [importErrors,setImportErrors]=useState([]);const [importFileName,setImportFileName]=useState("");
   const [importHasStakeholderSheet,setImportHasStakeholderSheet]=useState(false);
@@ -631,16 +631,30 @@ const DealCreator = ({onSave,onImport,onClose}) => {
   // silently advancing to an empty form.
   const gen=async()=>{
     setLoading(true);setGenError("");
+    // The 5 stages the AI is told to use are this org's actual current labels (falling
+    // back to defaults for anything never renamed), same as everywhere else stage labels
+    // are resolved -- see phaseDisplayLabel/ProcessTimeline.
+    const resolvedStages=STAGE_DEFS.map(s=>({...s,label:(stageLabels&&stageLabels[s.key])||DEFAULT_STAGE_LABELS[s.key]}));
     let res;
     try{
-      res=await callClaude("You are an enterprise sales AI. Return ONLY valid JSON no markdown.",`Extract: company,contact,title,value,industry,accessCode(6-char uppercase),welcomeMsg(2 sentences),execSummary.problem(2 paragraphs),execSummary.challenges(array 4),execSummary.solutions(array 4),discovery.summary(2 sentences),discovery.corporateStrategy(array 3),discovery.topOutcomes(array 3),discovery.challenges(array 4),discovery.jobsToBeDone(array 3),discovery.primaryUseCase,discovery.goals({"90 Days":[],"1 Year":[],"Beyond":[]}),stakeholders(array:name,role,designation,bu,linkedin).\n\n${tx}`,2000);
+      res=await callClaude("You are an enterprise sales AI. Return ONLY valid JSON no markdown.",`Extract: company,contact,title,value,industry,accessCode(6-char uppercase),welcomeMsg(2 sentences),execSummary.problem(2 paragraphs),execSummary.challenges(array 4),execSummary.solutions(array 4),discovery.summary(2 sentences),discovery.corporateStrategy(array 3),discovery.topOutcomes(array 3),discovery.challenges(array 4),discovery.jobsToBeDone(array 3),discovery.primaryUseCase,discovery.goals({"90 Days":[],"1 Year":[],"Beyond":[]}),stakeholders(array:name,role,designation,bu,linkedin; designation must be exactly one of "champion","decision-maker","influencer","blocker" -- no other values, no different casing; exactly one stakeholder should be "decision-maker" and one should be "champion" where the transcript supports it),tasks(array of {stage,task}; stage must be exactly one of ${resolvedStages.map(s=>`"${s.label}"`).join(",")}; 2-3 tasks per stage, inferred from what's actually discussed or implied in the transcript, not generic placeholders).\n\n${tx}`,2000);
     }catch(e){setGenError(e.message||"AI request failed");setLoading(false);return;}
     try{
       const jsonMatch=res.match(/\{[\s\S]*\}/);
       if(!jsonMatch)throw new Error(`AI didn't return JSON. Raw response: ${res.slice(0,300)||"(empty)"}`);
       const p=JSON.parse(jsonMatch[0]);
       const init=n=>n.split(" ").map(x=>x[0]).join("").toUpperCase().slice(0,2);
-      setDraft(v=>({...v,...p,logo:(p.company||"").slice(0,2).toUpperCase(),execSummary:p.execSummary||v.execSummary,discovery:{...v.discovery,...(p.discovery||{})},stakeholders:(p.stakeholders||[]).map((s,i)=>({id:`s${i+1}`,...s,initials:init(s.name||""),engagement:50,lastSeen:"Just added",approvalRequired:s.designation==="decision-maker"||s.designation==="blocker",docsViewed:[],reportsTo:null})),mapItems:["Value Alignment","Business Case","Paper Process"].map((ph,pi)=>({id:pi*10+1,phase:ph,task:`${ph} Kickoff`,owner:"Mark H.",buyerOwner:p.contact||"",dueDate:"",status:"pending",notes:"",approvalRequired:false})),activityLog:[]}));
+      // deal_tasks.phase is DB-constrained to the 5 literal default strings regardless of
+      // this org's display labels (see STAGE_DEFS) -- the AI was told to use the org's
+      // labels for readability, so this maps its returned label back to the literal phase.
+      // Falls back to the first stage rather than silently dropping a task if the AI's
+      // wording doesn't match exactly (case/whitespace drift).
+      const phaseForLabel=label=>{
+        const norm=(label||"").trim().toLowerCase();
+        const match=resolvedStages.find(s=>s.label.toLowerCase()===norm);
+        return (match||resolvedStages[0]).phase;
+      };
+      setDraft(v=>({...v,...p,logo:(p.company||"").slice(0,2).toUpperCase(),execSummary:p.execSummary||v.execSummary,discovery:{...v.discovery,...(p.discovery||{})},stakeholders:(p.stakeholders||[]).map((s,i)=>({id:`s${i+1}`,...s,initials:init(s.name||""),engagement:50,lastSeen:"Just added",approvalRequired:s.designation==="decision-maker"||s.designation==="blocker",docsViewed:[],reportsTo:null})),mapItems:(p.tasks||[]).map((t,i)=>({id:i+1,phase:phaseForLabel(t.stage),task:t.task,owner:"",buyerOwner:p.contact||"",dueDate:"",status:"pending",notes:"",approvalRequired:false})),activityLog:[]}));
       setStep(3);
     }catch(e){setGenError(e.message||"Couldn't parse the AI's response");}
     setLoading(false);
@@ -2309,7 +2323,7 @@ select option{background:#fff}
         <div style={{fontSize:13,color:P.textSec,maxWidth:420,textAlign:"center",lineHeight:1.6}}>A bivy is a mutual success planning workspace you share with a prospect, next steps, shared content, and action items you both stay aligned on.</div>
         <button onClick={()=>setShowCreator(true)} style={{padding:"10px 20px",background:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>+ New Deal Room</button>
       </div>
-      {showCreator&&<DealCreator onSave={createDeal} onImport={importDeals} onClose={()=>setShowCreator(false)}/>}
+      {showCreator&&<DealCreator onSave={createDeal} onImport={importDeals} onClose={()=>setShowCreator(false)} stageLabels={stageLabels}/>}
       {showSettings&&<SettingsModal orgId={orgId} myUserId={session?.user?.id} myRole={myRole} onClose={()=>setShowSettings(false)}/>}
       {showWelcome&&viewMode==="rep"&&<WelcomeOverlay onDone={dismissWelcome}/>}
     </div>;
@@ -2901,7 +2915,7 @@ select option{background:#fff}
       </div>
     </div>
 
-    {showCreator&&<DealCreator onSave={createDeal} onImport={importDeals} onClose={()=>setShowCreator(false)}/>}
+    {showCreator&&<DealCreator onSave={createDeal} onImport={importDeals} onClose={()=>setShowCreator(false)} stageLabels={stageLabels}/>}
     {toast&&<div style={{position:"fixed",bottom:24,left:"50%",transform:"translateX(-50%)",background:P.text,borderRadius:8,padding:"10px 20px",fontSize:12,color:"#fff",fontWeight:600,boxShadow:"0 4px 20px rgba(0,0,0,0.15)",zIndex:999}}>{toast} ✓</div>}
   </div>;
 }
