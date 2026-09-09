@@ -113,6 +113,7 @@ function mapDealFromDb(row) {
       status: t.status,
       notes: t.notes,
       approvalRequired: t.approval_required,
+      calendlyEnabled: t.calendly_enabled,
     })),
     content: (row.documents || []).map(d => ({
       id: d.id,
@@ -1379,8 +1380,8 @@ const StakeholderModal = ({editing,allStakeholders,onSave,onClose}) => {
 
 // Opened by clicking a task's ring in Action Plan -- replaces the old standalone "×"
 // delete button, which now lives as an action inside this modal instead.
-const TaskModal = ({task,phases,onSave,onDelete,onClose}) => {
-  const [draft,setDraft]=useState({task:task.task,phase:task.phase,owner:task.owner||"",buyerOwner:task.buyerOwner||"",dueDate:task.dueDate||"",status:task.status,notes:task.notes||"",approvalRequired:!!task.approvalRequired});
+const TaskModal = ({task,phases,onSave,onDelete,onClose,calendlyAvailable}) => {
+  const [draft,setDraft]=useState({task:task.task,phase:task.phase,owner:task.owner||"",buyerOwner:task.buyerOwner||"",dueDate:task.dueDate||"",status:task.status,notes:task.notes||"",approvalRequired:!!task.approvalRequired,calendlyEnabled:!!task.calendlyEnabled});
   const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
   const lbl={fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6,display:"block"};
   return (<div style={{position:"fixed",inset:0,background:"rgba(27,31,35,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
@@ -1400,7 +1401,13 @@ const TaskModal = ({task,phases,onSave,onDelete,onClose}) => {
       </div>
       <div style={{marginBottom:12}}><label style={lbl}>Due Date</label><input type="date" value={draft.dueDate} onChange={e=>setDraft(d=>({...d,dueDate:e.target.value}))} style={inp}/></div>
       <div style={{marginBottom:14}}><label style={lbl}>Notes</label><textarea value={draft.notes} onChange={e=>setDraft(d=>({...d,notes:e.target.value}))} style={{...inp,height:60,resize:"vertical"}}/></div>
-      <div style={{marginBottom:20}}><label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:P.textSec,cursor:"pointer"}}><input type="checkbox" checked={draft.approvalRequired} onChange={e=>setDraft(d=>({...d,approvalRequired:e.target.checked}))}/>Approval Required</label></div>
+      <div style={{marginBottom:12}}><label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:P.textSec,cursor:"pointer"}}><input type="checkbox" checked={draft.approvalRequired} onChange={e=>setDraft(d=>({...d,approvalRequired:e.target.checked}))}/>Approval Required</label></div>
+      <div style={{marginBottom:20}}>
+        <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:calendlyAvailable?P.textSec:P.textMute,cursor:calendlyAvailable?"pointer":"not-allowed"}}>
+          <input type="checkbox" checked={draft.calendlyEnabled} disabled={!calendlyAvailable} onChange={e=>setDraft(d=>({...d,calendlyEnabled:e.target.checked}))}/>Enable Scheduling
+        </label>
+        {!calendlyAvailable&&<div style={{fontSize:11,color:P.textMute,marginTop:4,marginLeft:22}}>Set your scheduling link in Settings first</div>}
+      </div>
       <div style={{display:"flex",gap:10}}>
         <button onClick={()=>{if(!draft.task.trim())return;onSave(draft);}} style={{flex:1,padding:"11px 20px",background:P.accent,border:"none",borderRadius:7,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>Save Changes</button>
         <button onClick={onClose} style={{padding:"11px 18px",background:"none",border:`1px solid ${P.border}`,borderRadius:7,color:P.textSec,fontSize:13,cursor:"pointer"}}>Cancel</button>
@@ -1481,7 +1488,7 @@ function DealRoom({prospectShareSlug}) {
   const discoveryListRefs=useRef({});
   const [showStakeholderModal,setShowStakeholderModal]=useState(false);
   const [editingStakeholder,setEditingStakeholder]=useState(null);
-  const [newTask,setNewTask]=useState({phase:"Value Alignment",task:"",owner:"Mark H.",buyerOwner:"",dueDate:"",status:"pending",notes:"",approvalRequired:false});
+  const [newTask,setNewTask]=useState({phase:"Value Alignment",task:"",owner:"Mark H.",buyerOwner:"",dueDate:"",status:"pending",notes:"",approvalRequired:false,calendlyEnabled:false});
   const [toast,setToast]=useState(null);
   const [orgView,setOrgView]=useState(false);
   const [activeLog,setActiveLog]=useState(null);
@@ -1920,11 +1927,13 @@ function DealRoom({prospectShareSlug}) {
     const {error}=await sb.from("deal_tasks").update({
       task:draft.task,phase:draft.phase,owner_name:draft.owner||null,buyer_owner_label:draft.buyerOwner||null,
       due_date:draft.dueDate||null,status:draft.status,notes:draft.notes||null,approval_required:!!draft.approvalRequired,
+      calendly_enabled:!!draft.calendlyEnabled,
     }).eq("id",taskId);
     if(error){flash("Couldn't update task");return;}
     setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,mapItems:d.mapItems.map(t=>t.id!==taskId?t:{
       ...t,task:draft.task,phase:draft.phase,owner:draft.owner,buyerOwner:draft.buyerOwner,
       dueDate:draft.dueDate,status:draft.status,notes:draft.notes,approvalRequired:draft.approvalRequired,
+      calendlyEnabled:draft.calendlyEnabled,
     })}));
     setEditingTask(null);
     flash("Task updated");
@@ -1943,12 +1952,13 @@ function DealRoom({prospectShareSlug}) {
       status:"pending",
       notes:draft.notes||null,
       approval_required:!!draft.approvalRequired,
+      calendly_enabled:!!draft.calendlyEnabled,
       sort_order:deal.mapItems.length,
     }).select().single();
     if(error||!data){flash("Couldn't add task");return;}
-    const mapped={id:data.id,phase:data.phase,task:data.task,owner:data.owner_name,buyerOwner:data.buyer_owner_label,dueDate:data.due_date,status:data.status,notes:data.notes,approvalRequired:data.approval_required};
+    const mapped={id:data.id,phase:data.phase,task:data.task,owner:data.owner_name,buyerOwner:data.buyer_owner_label,dueDate:data.due_date,status:data.status,notes:data.notes,approvalRequired:data.approval_required,calendlyEnabled:data.calendly_enabled};
     setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,mapItems:[...d.mapItems,mapped]}));
-    setNewTask({phase:"Value Alignment",task:"",owner:"Mark H.",buyerOwner:"",dueDate:"",status:"pending",notes:"",approvalRequired:false});
+    setNewTask({phase:"Value Alignment",task:"",owner:"Mark H.",buyerOwner:"",dueDate:"",status:"pending",notes:"",approvalRequired:false,calendlyEnabled:false});
     setShowAddTask(null);
     flash("Task added");
   };
@@ -2465,9 +2475,6 @@ select option{background:#fff}
                 <div style={{display:"flex",gap:10}}>
                   {deal.repProfile.linkedin&&<a href={deal.repProfile.linkedin} target="_blank" rel="noopener noreferrer" style={{padding:"7px 16px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:"#0A66C2",fontSize:12,fontWeight:700,textDecoration:"none",display:"flex",alignItems:"center",gap:5}}>{LI_SVG}LinkedIn</a>}
                   <button onClick={()=>setShowShare(true)} style={{padding:"7px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Share Room</button>
-                  {/* Nothing rendered when the rep hasn't set a scheduling link -- never an
-                      empty/broken button. */}
-                  {deal.repProfile.calendly&&<button onClick={()=>window.Calendly&&window.Calendly.initPopupWidget({url:deal.repProfile.calendly})} style={{padding:"7px 16px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,fontWeight:700,cursor:"pointer"}}>Schedule a call</button>}
                 </div>
               </div>
             </div>}
@@ -2539,6 +2546,12 @@ select option{background:#fff}
                           <div style={{fontSize:13,color:task.status==="complete"?P.textMute:P.text,textDecoration:task.status==="complete"?"line-through":"none",fontWeight:500}}>{task.task}</div>
                           {task.notes&&<div style={{fontSize:11,color:P.textMute,marginTop:2,fontStyle:"italic"}}>{task.notes}</div>}
                           {task.approvalRequired&&<span style={{fontSize:9,fontWeight:700,color:P.red,textTransform:"uppercase",letterSpacing:"0.06em"}}>Approval Required</span>}
+                          {/* Prospect-facing only -- a rep doesn't need to book a meeting
+                              with themselves. Reuses the rep's own profiles.calendly_url
+                              (0025) as the booking link; calendlyEnabled just marks which
+                              tasks surface it. */}
+                          {viewMode==="prospect"&&task.calendlyEnabled&&deal.repProfile?.calendly&&
+                            <button onClick={()=>window.Calendly&&window.Calendly.initPopupWidget({url:deal.repProfile.calendly})} style={{display:"block",marginTop:4,padding:0,background:"none",border:"none",color:P.accent,fontSize:11,fontWeight:700,cursor:"pointer",textDecoration:"underline"}}>Schedule this</button>}
                         </div>
                       </div>
                       <div style={{fontSize:12,color:P.textSec}}>{task.owner}</div>
@@ -2553,9 +2566,15 @@ select option{background:#fff}
                       <input placeholder="Buyer owner" value={newTask.buyerOwner} onChange={e=>setNewTask({...newTask,buyerOwner:e.target.value})} style={inpS}/>
                       <input type="date" value={newTask.dueDate} onChange={e=>setNewTask({...newTask,dueDate:e.target.value})} style={inpS}/>
                     </div>
-                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
-                      <input placeholder="Notes" value={newTask.notes} onChange={e=>setNewTask({...newTask,notes:e.target.value})} style={inpS}/>
+                    <div style={{marginBottom:8}}>
+                      <input placeholder="Notes" value={newTask.notes} onChange={e=>setNewTask({...newTask,notes:e.target.value})} style={{...inpS,width:"100%"}}/>
+                    </div>
+                    <div style={{display:"flex",gap:16,alignItems:"center",marginBottom:12,flexWrap:"wrap"}}>
                       <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:P.textSec,cursor:"pointer"}}><input type="checkbox" checked={newTask.approvalRequired} onChange={e=>setNewTask({...newTask,approvalRequired:e.target.checked})}/>Approval Required</label>
+                      <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:deal.repProfile?.calendly?P.textSec:P.textMute,cursor:deal.repProfile?.calendly?"pointer":"not-allowed"}}>
+                        <input type="checkbox" checked={newTask.calendlyEnabled} disabled={!deal.repProfile?.calendly} onChange={e=>setNewTask({...newTask,calendlyEnabled:e.target.checked})}/>Enable Scheduling
+                      </label>
+                      {!deal.repProfile?.calendly&&<span style={{fontSize:11,color:P.textMute}}>Set your scheduling link in Settings first</span>}
                     </div>
                     <div style={{display:"flex",gap:8}}>
                       <button onClick={()=>{if(!newTask.task.trim())return;addTask(newTask);setShowAddTask(null);}} style={{padding:"8px 18px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Add Task</button>
@@ -2570,6 +2589,7 @@ select option{background:#fff}
               onClose={()=>setEditingTask(null)}
               onSave={draft=>updateTask(editingTask.id,draft)}
               onDelete={()=>{deleteTask(editingTask.id);setEditingTask(null);}}
+              calendlyAvailable={!!deal.repProfile?.calendly}
             />}
           </div>}
 
