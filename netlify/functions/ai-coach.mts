@@ -50,7 +50,10 @@ export default async (req: Request, context: Context) => {
       },
       body: JSON.stringify({
         model: "claude-sonnet-5",
-        max_tokens: Math.min(max_tokens || 1400, 2000),
+        // Ceiling raised 2000->4000 for the transcript-extraction call (app.jsx's gen()),
+        // whose JSON payload (exec summary, discovery, stakeholders, now tasks too) can
+        // exceed 2000 tokens and get cut off mid-structure before the closing braces.
+        max_tokens: Math.min(max_tokens || 1400, 4000),
         system,
         messages,
       }),
