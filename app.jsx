@@ -1556,7 +1556,7 @@ function DealRoom({prospectShareSlug}) {
   const discoveryListRefs=useRef({});
   const [showStakeholderModal,setShowStakeholderModal]=useState(false);
   const [editingStakeholder,setEditingStakeholder]=useState(null);
-  const [newTask,setNewTask]=useState({phase:"Value Alignment",task:"",owner:"Mark H.",buyerOwner:"",dueDate:"",status:"pending",notes:"",approvalRequired:false,calendlyEnabled:false});
+  const [newTask,setNewTask]=useState({phase:"Value Alignment",task:"",owner:"",buyerOwner:"",dueDate:"",status:"pending",notes:"",approvalRequired:false,calendlyEnabled:false});
   const [toast,setToast]=useState(null);
   const [orgView,setOrgView]=useState(false);
   const [activeLog,setActiveLog]=useState(null);
@@ -2026,7 +2026,7 @@ function DealRoom({prospectShareSlug}) {
     if(error||!data){flash("Couldn't add task");return;}
     const mapped={id:data.id,phase:data.phase,task:data.task,owner:data.owner_name,buyerOwner:data.buyer_owner_label,dueDate:data.due_date,status:data.status,notes:data.notes,approvalRequired:data.approval_required,calendlyEnabled:data.calendly_enabled};
     setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,mapItems:[...d.mapItems,mapped]}));
-    setNewTask({phase:"Value Alignment",task:"",owner:"Mark H.",buyerOwner:"",dueDate:"",status:"pending",notes:"",approvalRequired:false,calendlyEnabled:false});
+    setNewTask({phase:"Value Alignment",task:"",owner:"",buyerOwner:"",dueDate:"",status:"pending",notes:"",approvalRequired:false,calendlyEnabled:false});
     setShowAddTask(null);
     flash("Task added");
   };
