@@ -20,6 +20,9 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <!-- jsPDF (exposes window.jspdf.jsPDF) -- generates the Executive Summary PDF download -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <!-- Calendly popup widget (exposes window.Calendly.initPopupWidget) -- "Schedule a call" on the prospect-facing Welcome tab -->
+  <link href="https://assets.calendly.com/assets/external/widget.css" rel="stylesheet">
+  <script src="https://assets.calendly.com/assets/external/widget.js"></script>
   <!-- Babel standalone (transforms JSX in browser) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <style>
@@ -91,7 +94,7 @@
        cached copy of app.jsx across deploys with no visible sign anything is wrong (the
        page loads fine, just running old code). Bump this on every deploy that changes
        app.jsx; there's no build step here to automate it. -->
-  <script type="text/babel" data-presets="react" src="/app.jsx?v=2026-09-08-2"></script>
+  <script type="text/babel" data-presets="react" src="/app.jsx?v=2026-09-08-3"></script>
 
   <script>
     // Mount the app once Babel has processed app.jsx

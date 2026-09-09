@@ -34,6 +34,24 @@ const fmtDuration = secs => {
   return `${m}:${String(s).padStart(2, "0")} min`;
 };
 
+// Converts a normal Google Slides/Docs/Sheets share link (the one from the Share button,
+// .../d/FILE_ID/edit?usp=sharing) into an embeddable viewer URL -- no "Publish to web" step
+// required. Returns null if the URL doesn't match a recognized Docs/Sheets/Slides pattern.
+// file_type reuses this app's existing pptx/docx/xlsx values (and their FILE_ICON entries)
+// rather than inventing a fourth type just for embeds.
+const parseGoogleDocUrl = url => {
+  const m = (url || "").trim().match(/^https:\/\/docs\.google\.com\/(presentation|document|spreadsheets)\/d\/([a-zA-Z0-9_-]+)/);
+  if (!m) return null;
+  const [, kind, fileId] = m;
+  const fileType = kind === "presentation" ? "pptx" : kind === "spreadsheets" ? "xlsx" : "docx";
+  // Slides and Sheets embed via /embed; Docs via /preview (the one that renders cleanly in
+  // an iframe without requiring Publish to web).
+  const embedUrl = kind === "document"
+    ? `https://docs.google.com/document/d/${fileId}/preview`
+    : `https://docs.google.com/${kind}/d/${fileId}/embed`;
+  return { fileType, embedUrl };
+};
+
 // Transforms a Supabase `deals` row (with nested stakeholders/deal_tasks/documents from a
 // PostgREST embed, or the equivalent shape from the get_deal_for_prospect RPC) into the
 // exact camelCase shape the render tree below already expects. Keeping this as one pure
@@ -48,7 +66,7 @@ function mapDealFromDb(row) {
     // these directly since a real prospect's own RLS can't read profiles/organizations.
     // The rep path resolves the same two fields itself, from data it's already fetching
     // for the avatar-cluster feature -- see the org-loading effect below.
-    repProfile: row.rep ? {name:row.rep.full_name||row.rep.email, email:row.rep.email, photo:row.rep.avatar_url, title:row.rep.title, phone:row.rep.phone, linkedin:row.rep.linkedin_url, initials:initialsOf(row.rep.full_name||row.rep.email)} : null,
+    repProfile: row.rep ? {name:row.rep.full_name||row.rep.email, email:row.rep.email, photo:row.rep.avatar_url, title:row.rep.title, phone:row.rep.phone, linkedin:row.rep.linkedin_url, calendly:row.rep.calendly_url, initials:initialsOf(row.rep.full_name||row.rep.email)} : null,
     orgName: row.org_name || null,
     company: row.company_name,
     contact: row.primary_contact_name,
@@ -103,6 +121,8 @@ function mapDealFromDb(row) {
       uploaded: shortDate(d.created_at),
       category: d.category,
       storagePath: d.storage_path,
+      isEmbed: d.is_embed,
+      embedUrl: d.embed_url,
       views: 0,
       viewers: [],
       lastViewed: "Not yet viewed",
@@ -877,7 +897,7 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
   const [stageLabelsDraft,setStageLabelsDraft]=useState(DEFAULT_STAGE_LABELS);
   const [logoUploading,setLogoUploading]=useState(false);
   const [myProfileData,setMyProfileData]=useState(null);
-  const [profileDraft,setProfileDraft]=useState({fullName:"",title:"",phone:"",linkedin:""});
+  const [profileDraft,setProfileDraft]=useState({fullName:"",title:"",phone:"",linkedin:"",calendly:""});
   const [avatarUploading,setAvatarUploading]=useState(false);
   const [billingLoading,setBillingLoading]=useState(false);
   const [billingError,setBillingError]=useState("");
@@ -888,7 +908,7 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
       sb.from("organization_members").select("id,user_id,role,created_at").eq("org_id",orgId),
       sb.from("org_invitations").select("id,email,role,created_at,expires_at").eq("org_id",orgId).is("accepted_at",null),
       sb.from("organizations").select("name,logo_url,deal_room_limit,subscription_status,trial_ends_at,current_period_end,stage_labels").eq("id",orgId).single(),
-      sb.from("profiles").select("full_name,email,title,phone,linkedin_url,avatar_url").eq("id",myUserId).single(),
+      sb.from("profiles").select("full_name,email,title,phone,linkedin_url,calendly_url,avatar_url").eq("id",myUserId).single(),
     ]);
     if(memErr||invErr||orgErr||myProfErr){setError("Couldn't load settings");setLoading(false);return;}
     // organization_members and profiles both reference auth.users independently -- no
@@ -903,7 +923,7 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
     setOrgName(orgRow?.name||"");
     setStageLabelsDraft({...DEFAULT_STAGE_LABELS,...(orgRow?.stage_labels||{})});
     setMyProfileData(myProf);
-    setProfileDraft({fullName:myProf?.full_name||"",title:myProf?.title||"",phone:myProf?.phone||"",linkedin:myProf?.linkedin_url||""});
+    setProfileDraft({fullName:myProf?.full_name||"",title:myProf?.title||"",phone:myProf?.phone||"",linkedin:myProf?.linkedin_url||"",calendly:myProf?.calendly_url||""});
     setLoading(false);
   };
   useEffect(()=>{load();},[orgId]);
@@ -952,6 +972,7 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
     const {error:err}=await sb.from("profiles").update({
       full_name:profileDraft.fullName||null,title:profileDraft.title||null,
       phone:profileDraft.phone||null,linkedin_url:profileDraft.linkedin||null,
+      calendly_url:profileDraft.calendly||null,
     }).eq("id",myUserId);
     if(err){setError("Couldn't save profile");return;}
     setError("");load();
@@ -1093,6 +1114,7 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
           <div style={{marginBottom:14}}><label style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:6}}>Title</label><input value={profileDraft.title} onChange={e=>setProfileDraft(d=>({...d,title:e.target.value}))} placeholder="Sr. Account Executive" style={inp}/></div>
           <div style={{marginBottom:14}}><label style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:6}}>Phone</label><input value={profileDraft.phone} onChange={e=>setProfileDraft(d=>({...d,phone:e.target.value}))} style={inp}/></div>
           <div style={{marginBottom:20}}><label style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:6}}>LinkedIn URL</label><input value={profileDraft.linkedin} onChange={e=>setProfileDraft(d=>({...d,linkedin:e.target.value}))} style={inp}/></div>
+          <div style={{marginBottom:20}}><label style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:6}}>Your Scheduling Link</label><input value={profileDraft.calendly} onChange={e=>setProfileDraft(d=>({...d,calendly:e.target.value}))} placeholder="https://calendly.com/you" style={inp}/></div>
           <div style={{fontSize:11,color:P.textMute,lineHeight:1.6,marginBottom:16}}>This is what your prospects see on the Welcome tab of any deal room you create.</div>
           <button onClick={saveMyProfile} style={{padding:"9px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Save Profile</button>
         </div>}
@@ -1194,6 +1216,59 @@ const ShareModal = ({deal,onClose,forProspect}) => {
   </div>);
 };
 const lbl0={fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6};
+
+// Renders a Google Slides/Docs/Sheets embed inline via iframe -- the whole reason embed-type
+// documents exist as a distinct thing from uploaded files (which mint a signed URL and open
+// in a new tab instead; see openDocument).
+const EmbedModal = ({doc,onClose}) => {
+  return (<div style={{position:"fixed",inset:0,background:"rgba(27,31,35,0.55)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:24}}>
+    <div style={{background:P.surface,borderRadius:16,width:"100%",maxWidth:960,boxShadow:"0 24px 64px rgba(0,0,0,0.2)",overflow:"hidden",display:"flex",flexDirection:"column"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 20px",borderBottom:`1px solid ${P.border}`}}>
+        <span style={{fontSize:14,fontWeight:700,color:P.text}}>{doc.title}</span>
+        <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,color:P.textMute,cursor:"pointer"}}>×</button>
+      </div>
+      <iframe src={doc.embedUrl} title={doc.title} style={{width:"100%",height:"70vh",border:"none"}} allowFullScreen/>
+    </div>
+  </div>);
+};
+
+// "Add Link" -- converts a normal Google share link (parseGoogleDocUrl) instead of requiring
+// the obscure Publish-to-web embed URL. Title has no filename to borrow the way file upload
+// does, so it's a real (pre-filled, editable) field rather than derived.
+const AddEmbedModal = ({onSave,onClose}) => {
+  const [url,setUrl]=useState("");
+  const [title,setTitle]=useState("");
+  const [error,setError]=useState("");
+  const handleUrlChange=val=>{
+    setUrl(val);setError("");
+    if(!title){
+      const parsed=parseGoogleDocUrl(val);
+      if(parsed)setTitle(parsed.fileType==="pptx"?"Untitled Slides":parsed.fileType==="xlsx"?"Untitled Sheet":"Untitled Doc");
+    }
+  };
+  const submit=()=>{
+    const parsed=parseGoogleDocUrl(url);
+    if(!parsed){setError("That doesn't look like a Google Slides, Docs, or Sheets link. Use the URL from that file's own Share button.");return;}
+    if(!title.trim()){setError("Give it a title.");return;}
+    onSave({title:title.trim(),...parsed});
+  };
+  const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:8,padding:"10px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
+  const lbl={fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:6};
+  return (<div style={{position:"fixed",inset:0,background:"rgba(27,31,35,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
+    <div style={{background:P.surface,borderRadius:16,width:440,padding:"24px 24px 28px",boxShadow:"0 24px 64px rgba(0,0,0,0.16)"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:18}}>
+        <span className="headline" style={{fontSize:18,color:P.text}}>Add Link</span>
+        <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,color:P.textMute,cursor:"pointer"}}>×</button>
+      </div>
+      <div style={{marginBottom:14}}><label style={lbl}>Google Slides / Docs / Sheets link</label>
+        <input value={url} onChange={e=>handleUrlChange(e.target.value)} placeholder="https://docs.google.com/presentation/d/.../edit?usp=sharing" style={inp}/></div>
+      <div style={{marginBottom:16}}><label style={lbl}>Title</label>
+        <input value={title} onChange={e=>setTitle(e.target.value)} style={inp}/></div>
+      {error&&<div style={{fontSize:12,color:P.red,marginBottom:14}}>{error}</div>}
+      <button onClick={submit} style={{width:"100%",padding:11,background:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>Add</button>
+    </div>
+  </div>);
+};
 
 // Permanent, not archive -- confirmed explicitly. Cascades cleanly through every child
 // table (stakeholders/tasks/documents/visit logs all have on-delete-cascade FKs to
@@ -1367,6 +1442,8 @@ function DealRoom({prospectShareSlug}) {
   const [chatInput,setChatInput]=useState("");
   const [showCreator,setShowCreator]=useState(false);
   const [showShare,setShowShare]=useState(false);
+  const [showAddEmbed,setShowAddEmbed]=useState(false);
+  const [showEmbedDoc,setShowEmbedDoc]=useState(null); // the content item currently open in EmbedModal, or null
   const [showDeleteDeal,setShowDeleteDeal]=useState(false);
   const [showEditDeal,setShowEditDeal]=useState(false);
   const [showAddTask,setShowAddTask]=useState(null); // null, or the phase currently showing its Add Task form
@@ -1491,7 +1568,7 @@ function DealRoom({prospectShareSlug}) {
         // Widened beyond id/email/full_name (originally just for the avatar cluster) to
         // also cover title/phone/linkedin/avatar -- the same fetch now doubles as the
         // rep-profile source for the Welcome tab's AE card, no extra query needed.
-        allContributorIds.length?sb.from("profiles").select("id,email,full_name,avatar_url,title,phone,linkedin_url").in("id",allContributorIds):{data:[]},
+        allContributorIds.length?sb.from("profiles").select("id,email,full_name,avatar_url,title,phone,linkedin_url,calendly_url").in("id",allContributorIds):{data:[]},
         allDealIds.length?sb.from("deal_risk_signals").select("*").in("deal_id",allDealIds):{data:[]},
         sb.from("organizations").select("name,deal_room_limit,subscription_status,trial_ends_at,onboarding_seen,stage_labels").eq("id",mem.org_id).single(),
         sb.from("profiles").select("full_name,email,avatar_url,title").eq("id",session.user.id).single(),
@@ -1542,7 +1619,7 @@ function DealRoom({prospectShareSlug}) {
           const p=profileById[d.createdBy];
           if(!p)return null;
           const name=p.full_name||p.email;
-          return {name,email:p.email,photo:p.avatar_url,title:p.title,phone:p.phone,linkedin:p.linkedin_url,initials:initialsOf(name)};
+          return {name,email:p.email,photo:p.avatar_url,title:p.title,phone:p.phone,linkedin:p.linkedin_url,calendly:p.calendly_url,initials:initialsOf(name)};
         })(),
         risk:(()=>{const r=riskByDeal[d.id];return r?{
           goingCold:r.going_cold,stalled:r.stalled,buyerDisengaged:!!r.disengaged_buyer_name,
@@ -2060,6 +2137,23 @@ function DealRoom({prospectShareSlug}) {
     flash("File added");
   };
 
+  // "Add Link" counterpart to uploadDocument -- same documents insert, but no Storage
+  // upload: is_embed:true and embed_url carry the converted viewer URL, storage_path stays
+  // null. {title,fileType,embedUrl} is exactly what parseGoogleDocUrl + the modal's own
+  // title field produce (see AddEmbedModal).
+  const addEmbedDocument=async({title,fileType,embedUrl})=>{
+    if(guardLocked())return;
+    const {data,error:insErr}=await sb.from("documents").insert({
+      deal_id:deal.id,created_by:session.user.id,title,file_type:fileType,
+      category:"General",is_embed:true,embed_url:embedUrl,
+    }).select().single();
+    if(insErr||!data){flash("Couldn't save link");return;}
+    const mapped={id:data.id,title:data.title,type:data.file_type,uploaded:shortDate(data.created_at),category:data.category,storagePath:null,isEmbed:true,embedUrl:data.embed_url,views:0,viewers:[],lastViewed:"Not yet viewed"};
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,content:[...d.content,mapped]}));
+    setShowAddEmbed(false);
+    flash("Link added");
+  };
+
   // Signed URL minted on demand (private bucket, so there's no permanent public URL to
   // store) -- the necessary difference from the org-logos public-bucket flow in
   // SettingsModal, which bakes one URL in at upload time.
@@ -2080,6 +2174,7 @@ function DealRoom({prospectShareSlug}) {
   };
 
   const openDocument=async f=>{
+    if(f.isEmbed){setShowEmbedDoc(f);logDocumentView(f);return;}
     if(!f.storagePath){flash("File not available");return;}
     if(f.type==="link"){window.open(f.storagePath,"_blank","noopener");logDocumentView(f);return;}
     const {data,error}=await sb.storage.from("deal-documents").createSignedUrl(f.storagePath,300);
@@ -2241,6 +2336,8 @@ select option{background:#fff}
     {showSettings&&<SettingsModal orgId={orgId} myUserId={session?.user?.id} myRole={myRole} onClose={()=>setShowSettings(false)}/>}
     {showWelcome&&viewMode==="rep"&&<WelcomeOverlay onDone={dismissWelcome}/>}
     {showShare&&<ShareModal deal={deal} onClose={()=>setShowShare(false)} forProspect={viewMode==="prospect"}/>}
+    {showAddEmbed&&<AddEmbedModal onSave={addEmbedDocument} onClose={()=>setShowAddEmbed(false)}/>}
+    {showEmbedDoc&&<EmbedModal doc={showEmbedDoc} onClose={()=>setShowEmbedDoc(null)}/>}
     {showDeleteDeal&&<DeleteDealModal deal={deal} onClose={()=>setShowDeleteDeal(false)} onConfirm={()=>deleteDeal(deal.id)}/>}
     {showEditDeal&&<EditDealModal deal={deal} onClose={()=>setShowEditDeal(false)} onSave={updateDealInfo}/>}
 
@@ -2354,6 +2451,9 @@ select option{background:#fff}
                 <div style={{display:"flex",gap:10}}>
                   {deal.repProfile.linkedin&&<a href={deal.repProfile.linkedin} target="_blank" rel="noopener noreferrer" style={{padding:"7px 16px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:"#0A66C2",fontSize:12,fontWeight:700,textDecoration:"none",display:"flex",alignItems:"center",gap:5}}>{LI_SVG}LinkedIn</a>}
                   <button onClick={()=>setShowShare(true)} style={{padding:"7px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Share Room</button>
+                  {/* Nothing rendered when the rep hasn't set a scheduling link -- never an
+                      empty/broken button. */}
+                  {deal.repProfile.calendly&&<button onClick={()=>window.Calendly&&window.Calendly.initPopupWidget({url:deal.repProfile.calendly})} style={{padding:"7px 16px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,fontWeight:700,cursor:"pointer"}}>Schedule a call</button>}
                 </div>
               </div>
             </div>}
@@ -2551,6 +2651,7 @@ select option{background:#fff}
               <div style={{fontSize:13,color:P.textSec}}>{deal.content.length} files · {deal.content.reduce((a,c)=>a+c.views,0)} total views</div>
               {viewMode==="rep"&&<div style={{display:"flex",gap:8}}>
                 <button onClick={()=>runAI("email")} style={{padding:"6px 12px",border:`1px solid ${P.border}`,borderRadius:6,background:"none",color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer"}}>✦ Draft Follow-up</button>
+                <button onClick={()=>setShowAddEmbed(true)} style={{padding:"6px 14px",border:`1px solid ${P.border}`,borderRadius:6,background:"none",color:P.textSec,fontSize:12,fontWeight:600,cursor:"pointer"}}>+ Add Link</button>
                 <label style={{padding:"6px 14px",background:P.accent,borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>+ Add File
                   <input type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,image/*" onChange={e=>e.target.files[0]&&uploadDocument(e.target.files[0])} style={{display:"none"}}/>
                 </label>
