@@ -126,6 +126,30 @@ function mapDealFromDb(row) {
       approvalRequired: t.approval_required,
       calendlyEnabled: t.calendly_enabled,
     })),
+    // Which sequence is currently shown/editable for this deal room (0028). Independent,
+    // never-merged sibling array to mapItems above -- this separation (not a discriminator
+    // column on one shared table) is what keeps MEDDPIC's Paper Process derivation,
+    // computeDealStatus, and the AI Coach context automatically pre-signature-only with no
+    // filter to remember at any of those sites.
+    activeSequenceView: row.active_sequence_view || "pre_signature",
+    experienceItems: (row.deal_experience_items || []).slice().sort((a, b) => a.sort_order - b.sort_order).map(t => ({
+      id: t.id,
+      phase: t.phase,
+      task: t.task,
+      owner: t.owner_name,
+      buyerOwner: t.buyer_owner_label,
+      dueDate: t.due_date,
+      status: t.status,
+      notes: t.notes,
+      approvalRequired: t.approval_required,
+      calendlyEnabled: t.calendly_enabled,
+    })),
+    // Prospect-only: get_deal_for_prospect (0028) now returns the org's real stage_labels/
+    // post_signature_stage_labels directly on the deal payload, since a prospect's RLS can't
+    // read organizations itself (same reasoning as repProfile above). null on the rep path,
+    // where stageLabels/postSignatureStageLabels instead come from the org-loading effect.
+    prospectStageLabels: row.stage_labels || null,
+    prospectPostSignatureStageLabels: row.post_signature_stage_labels || null,
     content: (row.documents || []).map(d => ({
       id: d.id,
       title: d.title,
@@ -297,14 +321,32 @@ const STAGE_DEFS = [
   {key:"formalize",desc:"Order form, T&Cs, legal and compliance",phase:"Paper Process"},
 ];
 const DEFAULT_STAGE_LABELS = {alignment:"Alignment",demo:"Product Demo",eval:"Trial / Evaluation",decision:"Decision",formalize:"Formalize"};
+
+// Post-signature customer-journey sequence -- independent of the close sequence above,
+// lives in its own deal_experience_items table (not deal_tasks), its own phase set, and
+// its own org-customizable label map (organizations.post_signature_stage_labels, 0028).
+// Same key/phase/label split as STAGE_DEFS: `phase` is the literal, DB-check-constrained
+// string, `key` is the stable label-lookup id, `label` is resolved only at render time.
+const PHASES_POST_SIGNATURE = ["Kickoff & Intro","Requirements","Implementation","Training","Go Live / Activation"];
+const POST_SIGNATURE_STAGE_DEFS = [
+  {key:"kickoff",desc:"Introduce the onboarding team and set expectations",phase:"Kickoff & Intro"},
+  {key:"requirements",desc:"Gather technical and workflow requirements",phase:"Requirements"},
+  {key:"implementation",desc:"Configure and build out the environment",phase:"Implementation"},
+  {key:"training",desc:"Train the team on day-to-day usage",phase:"Training"},
+  {key:"golive",desc:"Final checks and go-live activation",phase:"Go Live / Activation"},
+];
+const DEFAULT_POST_SIGNATURE_STAGE_LABELS = {kickoff:"Kickoff & Intro",requirements:"Requirements",implementation:"Implementation",training:"Training",golive:"Go Live / Activation"};
+
 // Literal DB phase string -> whatever this org calls that stage today (custom label, or the
 // default if never renamed). Used anywhere a phase name is *displayed*; filtering/grouping
-// always keeps using the literal phase string itself, never this.
-const phaseDisplayLabel = (phase, stageLabels) => {
-  const def = STAGE_DEFS.find(s => s.phase === phase);
+// always keeps using the literal phase string itself, never this. Parameterized so both the
+// pre-signature and post-signature sequences can share the same lookup logic.
+const phaseDisplayLabelFor = (phase, stageLabels, stageDefs, defaultLabels) => {
+  const def = stageDefs.find(s => s.phase === phase);
   if (!def) return phase;
-  return (stageLabels && stageLabels[def.key]) || DEFAULT_STAGE_LABELS[def.key];
+  return (stageLabels && stageLabels[def.key]) || defaultLabels[def.key];
 };
+const phaseDisplayLabel = (phase, stageLabels) => phaseDisplayLabelFor(phase, stageLabels, STAGE_DEFS, DEFAULT_STAGE_LABELS);
 // Phase headers are plain uppercase mono labels in the brand system (no color-coded pill
 // per phase) -- see the mockup's .phase-name, which is deliberately un-colored.
 const STATUS_CFG = {
@@ -461,11 +503,11 @@ const ProspectLogin = ({deal,shareSlug,onSuccess}) => {
   </div>);
 };
 
-const ProcessTimeline = ({deal,stageLabels}) => {
-  const base=STAGE_DEFS.map(s=>({...s,label:(stageLabels&&stageLabels[s.key])||DEFAULT_STAGE_LABELS[s.key]}));
+const ProcessTimeline = ({deal,stageLabels,stageDefs=STAGE_DEFS,defaultLabels=DEFAULT_STAGE_LABELS,items:itemsProp,phases:phasesProp,inverted=false}) => {
+  const base=stageDefs.map(s=>({...s,label:(stageLabels&&stageLabels[s.key])||defaultLabels[s.key]}));
   const steps=base.filter(s=>!s.trialOnly||deal.includeTrialSessions);
-  const phases=deal.includeTrialSessions?PHASES_ALL:PHASES_NO_TRIAL;
-  const items=deal.mapItems.filter(t=>phases.includes(t.phase));
+  const phases=phasesProp||(deal.includeTrialSessions?PHASES_ALL:PHASES_NO_TRIAL);
+  const items=(itemsProp||deal.mapItems).filter(t=>phases.includes(t.phase));
 
   // Score each step from its own underlying task phase independently -- not a raw % of
   // all tasks across the whole deal (that made unrelated later phases look done from a
@@ -477,18 +519,27 @@ const ProcessTimeline = ({deal,stageLabels}) => {
     if(phTasks.length===0)return "pending";
     return phTasks.every(t=>t.status==="complete")?"complete":"active";
   });
+  // Post-signature mode visually inverts this bar (orange field, white overlay) so a rep
+  // can tell which sequence they're in at a glance without reading text. Checked contrast
+  // before picking this treatment: a flat orange background with the *existing* white text
+  // colors left as-is computes to ~3.5:1 for the step labels -- passes for large text/
+  // non-text elements but fails WCAG AA's 4.5:1 floor for normal-size text. So labels/the
+  // helper line sit in solid-white pills (guaranteed full contrast in any state) rather
+  // than as raw white text on the orange field; only the large graphical elements
+  // (connector line, step circles) go straight white/translucent-white, which is fine
+  // under the 3:1 non-text contrast rule.
   return (
-    <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:14,padding:"28px 36px",marginBottom:24,boxShadow:"0 1px 2px rgba(27,31,35,0.05), 0 12px 32px -12px rgba(27,31,35,0.16)"}}>
-      <div style={{fontSize:13,fontWeight:600,color:P.textMute,marginBottom:28}}>Track where we are in the process at any given time</div>
+    <div style={{background:inverted?P.accent:P.surface,border:`1px solid ${inverted?"rgba(255,255,255,0.25)":P.border}`,borderRadius:14,padding:"28px 36px",marginBottom:24,boxShadow:"0 1px 2px rgba(27,31,35,0.05), 0 12px 32px -12px rgba(27,31,35,0.16)"}}>
+      <div style={inverted?{display:"inline-block",fontSize:13,fontWeight:600,color:P.ink,marginBottom:28,background:"#fff",borderRadius:6,padding:"4px 10px"}:{fontSize:13,fontWeight:600,color:P.textMute,marginBottom:28}}>Track where we are in the process at any given time</div>
       <div style={{display:"flex",alignItems:"flex-start"}}>
         {steps.map((step,i)=>{
           const isCom=phaseStatuses[i]==="complete",isAct=phaseStatuses[i]==="active";
           return (<div key={step.key} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",textAlign:"center",position:"relative"}}>
-            {i<steps.length-1&&<div style={{position:"absolute",top:15,left:"50%",width:"100%",height:2,background:isCom?P.accent:P.border,zIndex:0}}/>}
-            <div style={{width:30,height:30,borderRadius:"50%",background:isCom?P.accent:P.surface,border:`2.5px solid ${isCom||isAct?P.accent:P.border}`,display:"flex",alignItems:"center",justifyContent:"center",zIndex:1,marginBottom:10,flexShrink:0}}>
-              {isCom&&<svg width="13" height="13" viewBox="0 0 10 10" fill="none"><path d="M1.5 5l2.3 2.3L8.5 2.5" stroke="#fff" strokeWidth="1.6" strokeLinecap="round"/></svg>}
+            {i<steps.length-1&&<div style={{position:"absolute",top:15,left:"50%",width:"100%",height:2,background:inverted?(isCom?"#fff":"rgba(255,255,255,0.35)"):(isCom?P.accent:P.border),zIndex:0}}/>}
+            <div style={{width:30,height:30,borderRadius:"50%",background:inverted?(isCom?"#fff":"transparent"):(isCom?P.accent:P.surface),border:`2.5px solid ${inverted?(isCom||isAct?"#fff":"rgba(255,255,255,0.4)"):(isCom||isAct?P.accent:P.border)}`,display:"flex",alignItems:"center",justifyContent:"center",zIndex:1,marginBottom:10,flexShrink:0}}>
+              {isCom&&<svg width="13" height="13" viewBox="0 0 10 10" fill="none"><path d="M1.5 5l2.3 2.3L8.5 2.5" stroke={inverted?P.accent:"#fff"} strokeWidth="1.6" strokeLinecap="round"/></svg>}
             </div>
-            <div style={{fontSize:12.5,fontWeight:600,color:isCom?P.text:isAct?P.accentMid:P.textMute,maxWidth:110,padding:"0 4px"}}>{step.label}</div>
+            <div style={inverted?{fontSize:12.5,fontWeight:600,color:P.ink,maxWidth:110,padding:"3px 8px",background:"#fff",borderRadius:6}:{fontSize:12.5,fontWeight:600,color:isCom?P.text:isAct?P.accentMid:P.textMute,maxWidth:110,padding:"0 4px"}}>{step.label}</div>
           </div>);
         })}
       </div>
@@ -949,6 +1000,7 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
   const [inviteRole,setInviteRole]=useState("member");
   const [orgName,setOrgName]=useState("");
   const [stageLabelsDraft,setStageLabelsDraft]=useState(DEFAULT_STAGE_LABELS);
+  const [postSignatureStageLabelsDraft,setPostSignatureStageLabelsDraft]=useState(DEFAULT_POST_SIGNATURE_STAGE_LABELS);
   const [logoUploading,setLogoUploading]=useState(false);
   const [myProfileData,setMyProfileData]=useState(null);
   const [profileDraft,setProfileDraft]=useState({fullName:"",title:"",phone:"",linkedin:"",calendly:""});
@@ -961,7 +1013,7 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
     const [{data:mem,error:memErr},{data:inv,error:invErr},{data:orgRow,error:orgErr},{data:myProf,error:myProfErr}]=await Promise.all([
       sb.from("organization_members").select("id,user_id,role,created_at").eq("org_id",orgId),
       sb.from("org_invitations").select("id,email,role,created_at,expires_at").eq("org_id",orgId).is("accepted_at",null),
-      sb.from("organizations").select("name,logo_url,deal_room_limit,subscription_status,trial_ends_at,current_period_end,stage_labels").eq("id",orgId).single(),
+      sb.from("organizations").select("name,logo_url,deal_room_limit,subscription_status,trial_ends_at,current_period_end,stage_labels,post_signature_stage_labels").eq("id",orgId).single(),
       sb.from("profiles").select("full_name,email,title,phone,linkedin_url,calendly_url,avatar_url").eq("id",myUserId).single(),
     ]);
     if(memErr||invErr||orgErr||myProfErr){setError("Couldn't load settings");setLoading(false);return;}
@@ -976,6 +1028,7 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
     setOrg(orgRow);
     setOrgName(orgRow?.name||"");
     setStageLabelsDraft({...DEFAULT_STAGE_LABELS,...(orgRow?.stage_labels||{})});
+    setPostSignatureStageLabelsDraft({...DEFAULT_POST_SIGNATURE_STAGE_LABELS,...(orgRow?.post_signature_stage_labels||{})});
     setMyProfileData(myProf);
     setProfileDraft({fullName:myProf?.full_name||"",title:myProf?.title||"",phone:myProf?.phone||"",linkedin:myProf?.linkedin_url||"",calendly:myProf?.calendly_url||""});
     setLoading(false);
@@ -1004,6 +1057,12 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
   const saveStageLabels=async()=>{
     const {error:err}=await sb.from("organizations").update({stage_labels:stageLabelsDraft}).eq("id",orgId);
     if(err){setError("Couldn't update stage labels");return;}
+    setError("");load();
+  };
+
+  const savePostSignatureStageLabels=async()=>{
+    const {error:err}=await sb.from("organizations").update({post_signature_stage_labels:postSignatureStageLabelsDraft}).eq("id",orgId);
+    if(err){setError("Couldn't update post-signature stage labels");return;}
     setError("");load();
   };
 
@@ -1152,6 +1211,15 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
             </div>
           ))}
           {myRole==="owner"&&<button onClick={saveStageLabels} style={{padding:"9px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Save Stage Labels</button>}
+
+          <div style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",margin:"20px 0 8px"}}>Post-Signature Stage Labels</div>
+          <div style={{fontSize:11.5,color:P.textMute,lineHeight:1.5,marginBottom:12}}>Renames each stage in the Post-Signature view -- same non-destructive rename as the Close Sequence: existing Experience items keep their phase, only the label changes.</div>
+          {POST_SIGNATURE_STAGE_DEFS.map(s=>(
+            <div key={s.key} style={{marginBottom:10}}>
+              <input value={postSignatureStageLabelsDraft[s.key]} onChange={e=>setPostSignatureStageLabelsDraft(d=>({...d,[s.key]:e.target.value}))} disabled={myRole!=="owner"} placeholder={DEFAULT_POST_SIGNATURE_STAGE_LABELS[s.key]} style={{...inp,opacity:myRole!=="owner"?0.6:1}}/>
+            </div>
+          ))}
+          {myRole==="owner"&&<button onClick={savePostSignatureStageLabels} style={{padding:"9px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Save Post-Signature Stage Labels</button>}
         </div>}
 
         {tab==="profile"&&<div>
@@ -1447,17 +1515,17 @@ const StakeholderModal = ({editing,allStakeholders,onSave,onClose}) => {
 
 // Opened by clicking a task's ring in Action Plan -- replaces the old standalone "×"
 // delete button, which now lives as an action inside this modal instead.
-const TaskModal = ({task,phases,onSave,onDelete,onClose,calendlyAvailable}) => {
+const TaskModal = ({task,phases,onSave,onDelete,onClose,calendlyAvailable,itemLabel="Task"}) => {
   const [draft,setDraft]=useState({task:task.task,phase:task.phase,owner:task.owner||"",buyerOwner:task.buyerOwner||"",dueDate:task.dueDate||"",status:task.status,notes:task.notes||"",approvalRequired:!!task.approvalRequired,calendlyEnabled:!!task.calendlyEnabled});
   const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
   const lbl={fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6,display:"block"};
   return (<div style={{position:"fixed",inset:0,background:"rgba(27,31,35,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
     <div style={{background:P.surface,borderRadius:16,width:480,maxHeight:"85vh",overflowY:"auto",padding:24,boxShadow:"0 24px 64px rgba(0,0,0,0.16)"}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:18}}>
-        <span className="headline" style={{fontSize:18,color:P.text}}>Edit Task</span>
+        <span className="headline" style={{fontSize:18,color:P.text}}>Edit {itemLabel}</span>
         <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,color:P.textMute,cursor:"pointer"}}>×</button>
       </div>
-      <div style={{marginBottom:12}}><label style={lbl}>Task Name</label><input value={draft.task} onChange={e=>setDraft(d=>({...d,task:e.target.value}))} style={inp}/></div>
+      <div style={{marginBottom:12}}><label style={lbl}>{itemLabel} Name</label><input value={draft.task} onChange={e=>setDraft(d=>({...d,task:e.target.value}))} style={inp}/></div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
         <div><label style={lbl}>Phase</label><select value={draft.phase} onChange={e=>setDraft(d=>({...d,phase:e.target.value}))} style={inp}>{phases.map(ph=><option key={ph}>{ph}</option>)}</select></div>
         <div><label style={lbl}>Status</label><select value={draft.status} onChange={e=>setDraft(d=>({...d,status:e.target.value}))} style={inp}><option value="complete">Complete</option><option value="in-progress">In Progress</option><option value="pending">Pending</option></select></div>
@@ -1503,6 +1571,7 @@ function DealRoom({prospectShareSlug}) {
   // closes the tab before dismissing it, on their very next login.
   const [showWelcome,setShowWelcome]=useState(false);
   const [stageLabels,setStageLabels]=useState(DEFAULT_STAGE_LABELS); // organizations.stage_labels (0024), merged over defaults
+  const [postSignatureStageLabels,setPostSignatureStageLabels]=useState(DEFAULT_POST_SIGNATURE_STAGE_LABELS); // organizations.post_signature_stage_labels (0028), merged over defaults
   const isLocked=subscriptionStatus==="active"?false:(subscriptionStatus==="trialing"?!(trialEndsAt&&new Date(trialEndsAt)>new Date()):true);
   // Client-side mirror of the enforce_org_not_locked trigger (0018) -- called at the top of
   // every create/edit mutation (not deletes, matching the trigger's own scope) so a locked
@@ -1537,6 +1606,8 @@ function DealRoom({prospectShareSlug}) {
   const [showEditDeal,setShowEditDeal]=useState(false);
   const [showAddTask,setShowAddTask]=useState(null); // null, or the phase currently showing its Add Task form
   const [editingTask,setEditingTask]=useState(null); // null, or the task currently open in TaskModal
+  const [showAddExperience,setShowAddExperience]=useState(null); // post-signature counterpart to showAddTask
+  const [editingExperienceItem,setEditingExperienceItem]=useState(null); // post-signature counterpart to editingTask
   // Which single Executive Summary section (if any) is being edited -- "problem" |
   // "challenges" | "solutions" | null -- so editing one section never puts the others
   // into edit mode too. summarySectionDraft holds that one section's in-progress value
@@ -1557,6 +1628,7 @@ function DealRoom({prospectShareSlug}) {
   const [showStakeholderModal,setShowStakeholderModal]=useState(false);
   const [editingStakeholder,setEditingStakeholder]=useState(null);
   const [newTask,setNewTask]=useState({phase:"Value Alignment",task:"",owner:"",buyerOwner:"",dueDate:"",status:"pending",notes:"",approvalRequired:false,calendlyEnabled:false});
+  const [newExperienceItem,setNewExperienceItem]=useState({phase:"Kickoff & Intro",task:"",owner:"",buyerOwner:"",dueDate:"",status:"pending",notes:"",approvalRequired:false,calendlyEnabled:false});
   const [toast,setToast]=useState(null);
   const [orgView,setOrgView]=useState(false);
   const [activeLog,setActiveLog]=useState(null);
@@ -1634,7 +1706,7 @@ function DealRoom({prospectShareSlug}) {
       setNeedsOrgSetup(false);
       setOrgId(mem.org_id);
       setMyRole(mem.role);
-      const {data:rows,error:rowsErr}=await sb.from("deals").select("*, stakeholders(*), deal_tasks(*), documents(*)").eq("org_id",mem.org_id).is("archived_at",null);
+      const {data:rows,error:rowsErr}=await sb.from("deals").select("*, stakeholders(*), deal_tasks(*), deal_experience_items(*), documents(*)").eq("org_id",mem.org_id).is("archived_at",null);
       if(cancelled)return;
       // A failed query must not be silently treated as "zero deals exist" -- surface it
       // as a real error instead (caught below), same principle as the rest of this fix.
@@ -1659,7 +1731,7 @@ function DealRoom({prospectShareSlug}) {
         // rep-profile source for the Welcome tab's AE card, no extra query needed.
         allContributorIds.length?sb.from("profiles").select("id,email,full_name,avatar_url,title,phone,linkedin_url,calendly_url").in("id",allContributorIds):{data:[]},
         allDealIds.length?sb.from("deal_risk_signals").select("*").in("deal_id",allDealIds):{data:[]},
-        sb.from("organizations").select("name,deal_room_limit,subscription_status,trial_ends_at,onboarding_seen,stage_labels").eq("id",mem.org_id).single(),
+        sb.from("organizations").select("name,deal_room_limit,subscription_status,trial_ends_at,onboarding_seen,stage_labels,post_signature_stage_labels").eq("id",mem.org_id).single(),
         sb.from("profiles").select("full_name,email,avatar_url,title").eq("id",session.user.id).single(),
       ]);
       if(cancelled)return;
@@ -1675,6 +1747,7 @@ function DealRoom({prospectShareSlug}) {
       setTrialEndsAt(orgRow?.trial_ends_at||null);
       setShowWelcome(orgRow?.onboarding_seen===false);
       setStageLabels({...DEFAULT_STAGE_LABELS,...(orgRow?.stage_labels||{})});
+      setPostSignatureStageLabels({...DEFAULT_POST_SIGNATURE_STAGE_LABELS,...(orgRow?.post_signature_stage_labels||{})});
       if(myProfileRow){
         const name=myProfileRow.full_name||myProfileRow.email;
         setMyProfile({name,email:myProfileRow.email,photo:myProfileRow.avatar_url,title:myProfileRow.title,initials:initialsOf(name)});
@@ -1978,13 +2051,13 @@ function DealRoom({prospectShareSlug}) {
   const updateTaskStatus=async(taskId,status)=>{
     if(guardLocked())return;
     const {error}=await sb.from("deal_tasks").update({status}).eq("id",taskId);
-    if(error){flash("Couldn't update task");return;}
+    if(error){flash(error.message||"Couldn't update task");return;}
     setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,mapItems:d.mapItems.map(t=>t.id===taskId?{...t,status}:t)}));
   };
 
   const deleteTask=async(taskId)=>{
     const {error}=await sb.from("deal_tasks").delete().eq("id",taskId);
-    if(error){flash("Couldn't delete task");return;}
+    if(error){flash(error.message||"Couldn't delete task");return;}
     setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,mapItems:d.mapItems.filter(t=>t.id!==taskId)}));
   };
 
@@ -1997,7 +2070,7 @@ function DealRoom({prospectShareSlug}) {
       due_date:draft.dueDate||null,status:draft.status,notes:draft.notes||null,approval_required:!!draft.approvalRequired,
       calendly_enabled:!!draft.calendlyEnabled,
     }).eq("id",taskId);
-    if(error){flash("Couldn't update task");return;}
+    if(error){flash(error.message||"Couldn't update task");return;}
     setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,mapItems:d.mapItems.map(t=>t.id!==taskId?t:{
       ...t,task:draft.task,phase:draft.phase,owner:draft.owner,buyerOwner:draft.buyerOwner,
       dueDate:draft.dueDate,status:draft.status,notes:draft.notes,approvalRequired:draft.approvalRequired,
@@ -2023,12 +2096,81 @@ function DealRoom({prospectShareSlug}) {
       calendly_enabled:!!draft.calendlyEnabled,
       sort_order:deal.mapItems.length,
     }).select().single();
-    if(error||!data){flash("Couldn't add task");return;}
+    if(error||!data){flash((error&&error.message)||"Couldn't add task");return;}
     const mapped={id:data.id,phase:data.phase,task:data.task,owner:data.owner_name,buyerOwner:data.buyer_owner_label,dueDate:data.due_date,status:data.status,notes:data.notes,approvalRequired:data.approval_required,calendlyEnabled:data.calendly_enabled};
     setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,mapItems:[...d.mapItems,mapped]}));
     setNewTask({phase:"Value Alignment",task:"",owner:"",buyerOwner:"",dueDate:"",status:"pending",notes:"",approvalRequired:false,calendlyEnabled:false});
     setShowAddTask(null);
     flash("Task added");
+  };
+
+  // Post-signature "Experience item" mutations -- 1:1 structural mirror of the deal_tasks
+  // CRUD above, targeting deal_experience_items/deal.experienceItems instead. deleteExperienceItem
+  // deliberately skips guardLocked(), matching deleteTask's own exemption (billing lock never
+  // blocks deletes) -- freeze enforcement for the inactive sequence is a separate DB trigger
+  // (enforce_active_sequence, 0028) that applies regardless of billing state.
+  const updateExperienceStatus=async(itemId,status)=>{
+    if(guardLocked())return;
+    const {error}=await sb.from("deal_experience_items").update({status}).eq("id",itemId);
+    if(error){flash(error.message||"Couldn't update experience item");return;}
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,experienceItems:d.experienceItems.map(t=>t.id===itemId?{...t,status}:t)}));
+  };
+
+  const deleteExperienceItem=async(itemId)=>{
+    const {error}=await sb.from("deal_experience_items").delete().eq("id",itemId);
+    if(error){flash(error.message||"Couldn't delete experience item");return;}
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,experienceItems:d.experienceItems.filter(t=>t.id!==itemId)}));
+  };
+
+  const updateExperienceItem=async(itemId,draft)=>{
+    if(guardLocked())return;
+    const {error}=await sb.from("deal_experience_items").update({
+      task:draft.task,phase:draft.phase,owner_name:draft.owner||null,buyer_owner_label:draft.buyerOwner||null,
+      due_date:draft.dueDate||null,status:draft.status,notes:draft.notes||null,approval_required:!!draft.approvalRequired,
+      calendly_enabled:!!draft.calendlyEnabled,
+    }).eq("id",itemId);
+    if(error){flash(error.message||"Couldn't update experience item");return;}
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,experienceItems:d.experienceItems.map(t=>t.id!==itemId?t:{
+      ...t,task:draft.task,phase:draft.phase,owner:draft.owner,buyerOwner:draft.buyerOwner,
+      dueDate:draft.dueDate,status:draft.status,notes:draft.notes,approvalRequired:draft.approvalRequired,
+      calendlyEnabled:draft.calendlyEnabled,
+    })}));
+    setEditingExperienceItem(null);
+    flash("Experience item updated");
+  };
+
+  const addExperienceItem=async(draft)=>{
+    if(guardLocked())return;
+    const {data,error}=await sb.from("deal_experience_items").insert({
+      deal_id:deal.id,
+      created_by:session.user.id,
+      phase:draft.phase,
+      task:draft.task,
+      owner_name:draft.owner||null,
+      buyer_owner_label:draft.buyerOwner||null,
+      due_date:draft.dueDate||null,
+      status:"pending",
+      notes:draft.notes||null,
+      approval_required:!!draft.approvalRequired,
+      calendly_enabled:!!draft.calendlyEnabled,
+      sort_order:deal.experienceItems.length,
+    }).select().single();
+    if(error||!data){flash((error&&error.message)||"Couldn't add experience item");return;}
+    const mapped={id:data.id,phase:data.phase,task:data.task,owner:data.owner_name,buyerOwner:data.buyer_owner_label,dueDate:data.due_date,status:data.status,notes:data.notes,approvalRequired:data.approval_required,calendlyEnabled:data.calendly_enabled};
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,experienceItems:[...d.experienceItems,mapped]}));
+    setNewExperienceItem({phase:"Kickoff & Intro",task:"",owner:"",buyerOwner:"",dueDate:"",status:"pending",notes:"",approvalRequired:false,calendlyEnabled:false});
+    setShowAddExperience(null);
+    flash("Experience item added");
+  };
+
+  // Manual, reversible per-deal toggle (0028) -- which sequence is currently shown/editable.
+  // guardLocked() here is purely for a consistent client-side billing message; the DB's
+  // existing enforce_org_not_locked trigger already covers this at the deals-update layer.
+  const toggleSequenceView=async(view)=>{
+    if(guardLocked())return;
+    const {error}=await sb.from("deals").update({active_sequence_view:view}).eq("id",deal.id);
+    if(error){flash(error.message||"Couldn't switch view");return;}
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,activeSequenceView:view}));
   };
 
   // Executive Summary / Discovery are just JSONB columns on deals -- editing them is a
@@ -2338,6 +2480,13 @@ select option{background:#fff}
           setDeals([mappedDeal]);
           setActiveId(mappedDeal.id);
           setProspectAuth(p=>({...p,[prospectShareSlug]:true}));
+          // stageLabels/postSignatureStageLabels are otherwise only ever set by the rep-only
+          // org-loading effect above -- without this, a prospect always saw the raw
+          // DEFAULT_STAGE_LABELS initial state, never an org's actual renamed labels, for
+          // either sequence. get_deal_for_prospect (0028) now returns both label maps
+          // directly on the deal payload for exactly this reason.
+          setStageLabels({...DEFAULT_STAGE_LABELS,...(mappedDeal.prospectStageLabels||{})});
+          setPostSignatureStageLabels({...DEFAULT_POST_SIGNATURE_STAGE_LABELS,...(mappedDeal.prospectPostSignatureStageLabels||{})});
           // Starts the one deal_visits row this browser session owns. Best-effort --
           // a failure here must never block the prospect from seeing their deal room.
           const {data:visitId,error}=await sb.rpc("start_deal_visit",{p_deal_id:mappedDeal.id});
@@ -2423,10 +2572,27 @@ select option{background:#fff}
     </div>;
   }
 
-  const phases=deal.includeTrialSessions?PHASES_ALL:PHASES_NO_TRIAL;
-  const visItems=deal.mapItems.filter(t=>phases.includes(t.phase));
+  // Sequence-aware: which sequence is currently toggled on for this deal (0028) decides
+  // which phase set/item array everything below reads from. Deliberately does NOT touch
+  // computeDealStatus, runAI's context builder, or ProcessTimeline's own (now-parameterized)
+  // computation -- those three stay pre-signature-only by design, per the toggle spec.
+  const isPostSig=deal.activeSequenceView==="post_signature";
+  const phases=isPostSig?PHASES_POST_SIGNATURE:(deal.includeTrialSessions?PHASES_ALL:PHASES_NO_TRIAL);
+  const visItems=(isPostSig?deal.experienceItems:deal.mapItems).filter(t=>phases.includes(t.phase));
+  const itemLabel=isPostSig?"Experience":"Task";
   const done=visItems.filter(t=>t.status==="complete").length;
   const pct=Math.round(done/(visItems.length||1)*100);
+  // Bundles everything the tab==="map" render block needs so it can read seq.* instead of
+  // duplicating the phase-group/add-form JSX twice for the two sequences.
+  const seq=isPostSig
+    ? {itemLabel,stageDefs:POST_SIGNATURE_STAGE_DEFS,curStageLabels:postSignatureStageLabels,defaultLabels:DEFAULT_POST_SIGNATURE_STAGE_LABELS,
+       addFn:addExperienceItem,updateFn:updateExperienceItem,updateStatusFn:updateExperienceStatus,deleteFn:deleteExperienceItem,
+       newDraft:newExperienceItem,setNewDraft:setNewExperienceItem,showAdd:showAddExperience,setShowAdd:setShowAddExperience,
+       editing:editingExperienceItem,setEditing:setEditingExperienceItem}
+    : {itemLabel,stageDefs:STAGE_DEFS,curStageLabels:stageLabels,defaultLabels:DEFAULT_STAGE_LABELS,
+       addFn:addTask,updateFn:updateTask,updateStatusFn:updateTaskStatus,deleteFn:deleteTask,
+       newDraft:newTask,setNewDraft:setNewTask,showAdd:showAddTask,setShowAdd:setShowAddTask,
+       editing:editingTask,setEditing:setEditingTask};
 
   // Rep's own "Prospect" preview toggle -- viewMode==="prospect" here is always a rep with a
   // real authenticated session and org membership looking at their own deal for convenience,
@@ -2564,7 +2730,7 @@ select option{background:#fff}
               </div>
             </div>}
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:12}}>
-              {[{label:"License Amount",val:deal.value,color:P.accent},{label:"Target Close",val:deal.closeDate,color:P.amber},{label:"Tasks Complete",val:`${done}/${visItems.length}`,color:P.green},{label:"Stakeholders",val:deal.stakeholders.length,color:P.purple}].map(({label,val,color})=>(
+              {[{label:"License Amount",val:deal.value,color:P.accent},{label:"Target Close",val:deal.closeDate,color:P.amber},{label:`${itemLabel} Complete`,val:`${done}/${visItems.length}`,color:P.green},{label:"Stakeholders",val:deal.stakeholders.length,color:P.purple}].map(({label,val,color})=>(
                 <div key={label} style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:10,padding:"16px 18px",borderTop:`3px solid ${color}`}}>
                   <div style={{fontSize:10,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:6}}>{label}</div>
                   <div style={{fontSize:18,fontWeight:800,color}}>{val}</div>
@@ -2608,24 +2774,38 @@ select option{background:#fff}
 
           {/* ACTION PLAN */}
           {tab==="map"&&<div>
-            <ProcessTimeline deal={deal} stageLabels={stageLabels}/>
+            {/* Manual, reversible per-deal toggle (0028) -- rep-only, never shown to a
+                prospect (a real prospect only ever sees whichever sequence's ProcessTimeline/
+                item list results from deal.activeSequenceView, set by the rep). No real-time
+                push to an already-open prospect tab exists in this app (confirmed -- fetch-
+                on-load only, everywhere), so the copy below is an explicit, stated limitation
+                rather than a silently shipped gap. */}
+            {viewMode==="rep"&&<div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16,flexWrap:"wrap"}}>
+              <div style={{display:"flex",background:P.bg,border:`1px solid ${P.border}`,borderRadius:9,padding:3}}>
+                {[["pre_signature","Close Sequence"],["post_signature","Post-Signature"]].map(([v,l])=>(
+                  <button key={v} onClick={()=>toggleSequenceView(v)} style={{padding:"7px 14px",fontSize:12.5,fontWeight:600,color:deal.activeSequenceView===v?"#fff":P.textSec,background:deal.activeSequenceView===v?P.accent:"transparent",border:"none",borderRadius:7,cursor:"pointer"}}>{l}</button>
+                ))}
+              </div>
+              <span style={{fontSize:11.5,color:P.textMute,fontStyle:"italic"}}>Prospect sees this after their next page refresh — not instantly.</span>
+            </div>}
+            <ProcessTimeline deal={deal} stageLabels={seq.curStageLabels} stageDefs={seq.stageDefs} defaultLabels={seq.defaultLabels} items={visItems} phases={phases} inverted={isPostSig}/>
             {phases.map(phase=>{
               const items=visItems.filter(t=>t.phase===phase);
               return <div key={phase} style={{marginBottom:20}}>
                 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 4px"}}>
-                  <span className="mono" style={{fontSize:11.5,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",color:P.textMute}}>{phaseDisplayLabel(phase,stageLabels)}</span>
+                  <span className="mono" style={{fontSize:11.5,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",color:P.textMute}}>{phaseDisplayLabelFor(phase,seq.curStageLabels,seq.stageDefs,seq.defaultLabels)}</span>
                   <span style={{fontSize:12.5,color:P.textMute}}>{items.filter(t=>t.status==="complete").length} of {items.length} complete</span>
                 </div>
                 <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:12,overflow:"hidden",boxShadow:"0 1px 2px rgba(27,31,35,0.05), 0 12px 32px -12px rgba(27,31,35,0.16)"}}>
                   {items.length>0&&<div style={{display:"grid",gridTemplateColumns:"1fr 100px 150px 100px 110px",padding:"7px 16px",background:P.bg,borderBottom:`1px solid ${P.border}`}}>
-                    {["Task","Seller","Buyer Owner","Due Date","Status"].map(h=><div key={h} style={{fontSize:10,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.07em"}}>{h}</div>)}
+                    {[seq.itemLabel,"Seller","Buyer Owner","Due Date","Status"].map(h=><div key={h} style={{fontSize:10,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.07em"}}>{h}</div>)}
                   </div>}
-                  {items.length===0&&<div style={{padding:"16px",fontSize:12.5,color:P.textMute,fontStyle:"italic"}}>No tasks yet in this phase</div>}
+                  {items.length===0&&<div style={{padding:"16px",fontSize:12.5,color:P.textMute,fontStyle:"italic"}}>{isPostSig?"No experience items yet in this phase":"No tasks yet in this phase"}</div>}
                   {items.map((task,i)=>{const sc=STATUS_CFG[task.status];return(
                     <div key={task.id} className="hr" style={{display:"grid",gridTemplateColumns:"1fr 100px 150px 100px 110px",padding:"11px 16px",borderBottom:i<items.length-1?`1px solid ${P.bg}`:"none",alignItems:"center"}}>
                       <div style={{display:"flex",alignItems:"flex-start",gap:10}}>
                         {viewMode==="rep"?
-                          <button onClick={()=>setEditingTask(task)} title="Edit task" style={{width:20,height:20,padding:0,borderRadius:"50%",border:task.status==="complete"?"none":`1.5px solid ${P.border}`,background:task.status==="complete"?P.ink:P.surface,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",marginTop:1,cursor:"pointer"}}>{task.status==="complete"&&<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1.5 5l2.3 2.3L8.5 2.5" stroke="#fff" strokeWidth="1.6" strokeLinecap="round"/></svg>}</button>
+                          <button onClick={()=>seq.setEditing(task)} title={`Edit ${seq.itemLabel.toLowerCase()}`} style={{width:20,height:20,padding:0,borderRadius:"50%",border:task.status==="complete"?"none":`1.5px solid ${P.border}`,background:task.status==="complete"?P.ink:P.surface,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",marginTop:1,cursor:"pointer"}}>{task.status==="complete"&&<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1.5 5l2.3 2.3L8.5 2.5" stroke="#fff" strokeWidth="1.6" strokeLinecap="round"/></svg>}</button>
                         :<div style={{width:20,height:20,borderRadius:"50%",border:task.status==="complete"?"none":`1.5px solid ${P.border}`,background:task.status==="complete"?P.ink:P.surface,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",marginTop:1}}>{task.status==="complete"&&<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1.5 5l2.3 2.3L8.5 2.5" stroke="#fff" strokeWidth="1.6" strokeLinecap="round"/></svg>}</div>}
                         <div>
                           <div style={{fontSize:13,color:task.status==="complete"?P.textMute:P.text,textDecoration:task.status==="complete"?"line-through":"none",fontWeight:500}}>{task.task}</div>
@@ -2642,38 +2822,39 @@ select option{background:#fff}
                       <div style={{fontSize:12,color:P.textSec}}>{task.owner}</div>
                       <div style={{fontSize:12,color:P.textSec}}>{task.buyerOwner}</div>
                       <div style={{fontSize:11,color:P.textMute}}>{task.dueDate}</div>
-                      {viewMode==="rep"?<select value={task.status} onChange={e=>updateTaskStatus(task.id,e.target.value)} style={{background:sc.bg,border:`1px solid ${sc.border}`,color:sc.text,borderRadius:5,padding:"4px 6px",fontSize:11,fontWeight:700,cursor:"pointer",width:"100%"}}><option value="complete">Complete</option><option value="in-progress">In Progress</option><option value="pending">Pending</option></select>
+                      {viewMode==="rep"?<select value={task.status} onChange={e=>seq.updateStatusFn(task.id,e.target.value)} style={{background:sc.bg,border:`1px solid ${sc.border}`,color:sc.text,borderRadius:5,padding:"4px 6px",fontSize:11,fontWeight:700,cursor:"pointer",width:"100%"}}><option value="complete">Complete</option><option value="in-progress">In Progress</option><option value="pending">Pending</option></select>
                       :<div style={{padding:"3px 8px",borderRadius:4,background:sc.bg,border:`1px solid ${sc.border}`,color:sc.text,fontSize:11,fontWeight:700,textAlign:"center"}}>{sc.label}</div>}
                     </div>);})}
-                  {viewMode==="rep"&&(showAddTask===phase?<div style={{padding:16,borderTop:items.length>0?`1px solid ${P.bg}`:"none"}}>
+                  {viewMode==="rep"&&(seq.showAdd===phase?<div style={{padding:16,borderTop:items.length>0?`1px solid ${P.bg}`:"none"}}>
                     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
-                      <input placeholder="Task name" value={newTask.task} onChange={e=>setNewTask({...newTask,task:e.target.value})} style={inpS}/>
-                      <input placeholder="Buyer owner" value={newTask.buyerOwner} onChange={e=>setNewTask({...newTask,buyerOwner:e.target.value})} style={inpS}/>
-                      <input type="date" value={newTask.dueDate} onChange={e=>setNewTask({...newTask,dueDate:e.target.value})} style={inpS}/>
+                      <input placeholder={isPostSig?"Experience name":"Task name"} value={seq.newDraft.task} onChange={e=>seq.setNewDraft({...seq.newDraft,task:e.target.value})} style={inpS}/>
+                      <input placeholder="Buyer owner" value={seq.newDraft.buyerOwner} onChange={e=>seq.setNewDraft({...seq.newDraft,buyerOwner:e.target.value})} style={inpS}/>
+                      <input type="date" value={seq.newDraft.dueDate} onChange={e=>seq.setNewDraft({...seq.newDraft,dueDate:e.target.value})} style={inpS}/>
                     </div>
                     <div style={{marginBottom:8}}>
-                      <input placeholder="Notes" value={newTask.notes} onChange={e=>setNewTask({...newTask,notes:e.target.value})} style={{...inpS,width:"100%"}}/>
+                      <input placeholder="Notes" value={seq.newDraft.notes} onChange={e=>seq.setNewDraft({...seq.newDraft,notes:e.target.value})} style={{...inpS,width:"100%"}}/>
                     </div>
                     <div style={{display:"flex",gap:16,alignItems:"center",marginBottom:12,flexWrap:"wrap"}}>
-                      <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:P.textSec,cursor:"pointer"}}><input type="checkbox" checked={newTask.approvalRequired} onChange={e=>setNewTask({...newTask,approvalRequired:e.target.checked})}/>Approval Required</label>
+                      <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:P.textSec,cursor:"pointer"}}><input type="checkbox" checked={seq.newDraft.approvalRequired} onChange={e=>seq.setNewDraft({...seq.newDraft,approvalRequired:e.target.checked})}/>Approval Required</label>
                       <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:deal.repProfile?.calendly?P.textSec:P.textMute,cursor:deal.repProfile?.calendly?"pointer":"not-allowed"}}>
-                        <input type="checkbox" checked={newTask.calendlyEnabled} disabled={!deal.repProfile?.calendly} onChange={e=>setNewTask({...newTask,calendlyEnabled:e.target.checked})}/>Enable Scheduling
+                        <input type="checkbox" checked={seq.newDraft.calendlyEnabled} disabled={!deal.repProfile?.calendly} onChange={e=>seq.setNewDraft({...seq.newDraft,calendlyEnabled:e.target.checked})}/>Enable Scheduling
                       </label>
                       {!deal.repProfile?.calendly&&<span style={{fontSize:11,color:P.textMute}}>Set your scheduling link in Settings first</span>}
                     </div>
                     <div style={{display:"flex",gap:8}}>
-                      <button onClick={()=>{if(!newTask.task.trim())return;addTask(newTask);setShowAddTask(null);}} style={{padding:"8px 18px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Add Task</button>
-                      <button onClick={()=>setShowAddTask(null)} style={{padding:"8px 14px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,cursor:"pointer"}}>Cancel</button>
+                      <button onClick={()=>{if(!seq.newDraft.task.trim())return;seq.addFn(seq.newDraft);seq.setShowAdd(null);}} style={{padding:"8px 18px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Add {seq.itemLabel}</button>
+                      <button onClick={()=>seq.setShowAdd(null)} style={{padding:"8px 14px",background:"none",border:`1px solid ${P.border}`,borderRadius:6,color:P.textSec,fontSize:12,cursor:"pointer"}}>Cancel</button>
                     </div>
-                  </div>:<button onClick={()=>{setNewTask(t=>({...t,phase}));setShowAddTask(phase);}} style={{width:"100%",padding:10,background:"none",border:"none",borderTop:items.length>0?`1px solid ${P.bg}`:"none",color:P.textMute,fontSize:12,cursor:"pointer"}} onMouseOver={e=>e.currentTarget.style.color=P.accent} onMouseOut={e=>e.currentTarget.style.color=P.textMute}>+ Add Task</button>)}
+                  </div>:<button onClick={()=>{seq.setNewDraft(t=>({...t,phase}));seq.setShowAdd(phase);}} style={{width:"100%",padding:10,background:"none",border:"none",borderTop:items.length>0?`1px solid ${P.bg}`:"none",color:P.textMute,fontSize:12,cursor:"pointer"}} onMouseOver={e=>e.currentTarget.style.color=P.accent} onMouseOut={e=>e.currentTarget.style.color=P.textMute}>+ Add {seq.itemLabel}</button>)}
                 </div>
               </div>;})}
-            {editingTask&&<TaskModal
-              task={editingTask}
+            {seq.editing&&<TaskModal
+              task={seq.editing}
               phases={phases}
-              onClose={()=>setEditingTask(null)}
-              onSave={draft=>updateTask(editingTask.id,draft)}
-              onDelete={()=>{deleteTask(editingTask.id);setEditingTask(null);}}
+              itemLabel={seq.itemLabel}
+              onClose={()=>seq.setEditing(null)}
+              onSave={draft=>seq.updateFn(seq.editing.id,draft)}
+              onDelete={()=>{seq.deleteFn(seq.editing.id);seq.setEditing(null);}}
               calendlyAvailable={!!deal.repProfile?.calendly}
             />}
           </div>}
