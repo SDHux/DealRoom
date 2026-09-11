@@ -269,9 +269,15 @@ function computeEngagementScore(deal) {
 }
 
 const API = "/api/ai-coach";
+// Rep-only feature (the AI panel and every button that opens it are already gated to
+// viewMode==="rep" -- see app render below); the server enforces the same boundary plus
+// a per-org monthly cap, so every call here has to carry the caller's own Supabase
+// session token, same as create-checkout-session/create-portal-session's accessToken.
 const callClaude = async (sys, usr, max = 1400) => {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) throw new Error("Please sign in to use AI Coach");
   const r = await fetch(API, { method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({ system:sys, max_tokens:max, messages:[{role:"user",content:usr}] })});
+    body: JSON.stringify({ system:sys, max_tokens:max, messages:[{role:"user",content:usr}], accessToken:session.access_token })});
   if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.error || "AI Coach request failed"); }
   const d = await r.json(); return d.text || "";
 };
