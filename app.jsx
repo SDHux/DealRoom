@@ -1019,7 +1019,7 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
     const [{data:mem,error:memErr},{data:inv,error:invErr},{data:orgRow,error:orgErr},{data:myProf,error:myProfErr}]=await Promise.all([
       sb.from("organization_members").select("id,user_id,role,created_at").eq("org_id",orgId),
       sb.from("org_invitations").select("id,email,role,created_at,expires_at").eq("org_id",orgId).is("accepted_at",null),
-      sb.from("organizations").select("name,logo_url,deal_room_limit,subscription_status,trial_ends_at,current_period_end,stage_labels,post_signature_stage_labels").eq("id",orgId).single(),
+      sb.from("organizations").select("name,logo_url,deal_room_limit,subscription_status,trial_ends_at,current_period_end,stripe_subscription_id,stage_labels,post_signature_stage_labels").eq("id",orgId).single(),
       sb.from("profiles").select("full_name,email,title,phone,linkedin_url,calendly_url,avatar_url").eq("id",myUserId).single(),
     ]);
     if(memErr||invErr||orgErr||myProfErr){setError("Couldn't load settings");setLoading(false);return;}
@@ -1251,19 +1251,26 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
           <div style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>Plan</div>
           {(()=>{
             const status=org?.subscription_status||"trialing";
+            const hasSubscription=!!org?.stripe_subscription_id;
             const daysLeft=org?.trial_ends_at?Math.max(0,Math.ceil((new Date(org.trial_ends_at)-new Date())/86400000)):null;
+            // Once a real Stripe subscription exists, never show the pre-subscription
+            // "Free trial — N days left" language again (Mark: subscribing should be a
+            // one-way door away from free-trial wording), even while status is still
+            // "trialing" during the Early Activation Promo's 2 free months.
             const label=status==="active"?"Active subscription"
               :status==="past_due"?"Payment failed"
+              :status==="trialing"&&hasSubscription?"Trial — Early Activation Promo"
               :status==="trialing"?(daysLeft>0?`Free trial — ${daysLeft} day${daysLeft===1?"":"s"} left`:"Trial ended")
               :"Trial ended";
             return (<>
-              <div style={{fontSize:14,fontWeight:700,color:status==="past_due"||(status==="trialing"&&daysLeft===0)?P.red:P.text,marginBottom:4}}>{label}</div>
+              <div style={{fontSize:14,fontWeight:700,color:status==="past_due"||(status==="trialing"&&!hasSubscription&&daysLeft===0)?P.red:P.text,marginBottom:4}}>{label}</div>
               {status==="active"&&org?.current_period_end&&<div style={{fontSize:12,color:P.textMute,marginBottom:16}}>Renews {new Date(org.current_period_end).toLocaleDateString()}</div>}
-              {status!=="active"&&<div style={{fontSize:12,color:P.textMute,marginBottom:16}}>myBivy is a single paid plan, up to {org?.deal_room_limit||10} active deal rooms.</div>}
+              {status==="trialing"&&hasSubscription&&org?.current_period_end&&<div style={{fontSize:12,color:P.textMute,marginBottom:16}}>First charge {new Date(org.current_period_end).toLocaleDateString()}</div>}
+              {!hasSubscription&&<div style={{fontSize:12,color:P.textMute,marginBottom:16}}>myBivy is a single paid plan, up to {org?.deal_room_limit||10} active deal rooms.</div>}
             </>);
           })()}
           {billingError&&<div style={{fontSize:12,color:P.red,marginBottom:12,padding:"8px 12px",background:P.redBg,border:`1px solid ${P.redBorder}`,borderRadius:6}}>{billingError}</div>}
-          {org?.subscription_status==="active"?
+          {org?.stripe_subscription_id?
             <button onClick={openPortal} disabled={billingLoading} style={{padding:"9px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:billingLoading?"not-allowed":"pointer",opacity:billingLoading?0.6:1}}>{billingLoading?"Please wait…":"Manage Billing"}</button>
           :<button onClick={openCheckout} disabled={billingLoading} style={{padding:"9px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:billingLoading?"not-allowed":"pointer",opacity:billingLoading?0.6:1}}>{billingLoading?"Please wait…":"Upgrade →"}</button>}
         </div>}
@@ -1572,13 +1579,16 @@ function DealRoom({prospectShareSlug}) {
   // viewMode==="prospect" -- soft lock is rep-side only, prospect share links are unaffected.
   const [subscriptionStatus,setSubscriptionStatus]=useState("trialing");
   const [trialEndsAt,setTrialEndsAt]=useState(null);
+  const [hasStripeSubscription,setHasStripeSubscription]=useState(false); // organizations.stripe_subscription_id -- see org_is_locked (0032)
   // organizations.onboarding_seen (0023) is the permanent gate, re-checked on every org data
   // load (not a one-time "just created" flag) -- so it still shows correctly if the owner
   // closes the tab before dismissing it, on their very next login.
   const [showWelcome,setShowWelcome]=useState(false);
   const [stageLabels,setStageLabels]=useState(DEFAULT_STAGE_LABELS); // organizations.stage_labels (0024), merged over defaults
   const [postSignatureStageLabels,setPostSignatureStageLabels]=useState(DEFAULT_POST_SIGNATURE_STAGE_LABELS); // organizations.post_signature_stage_labels (0028), merged over defaults
-  const isLocked=subscriptionStatus==="active"?false:(subscriptionStatus==="trialing"?!(trialEndsAt&&new Date(trialEndsAt)>new Date()):true);
+  // Mirrors org_is_locked (0032): once a real Stripe subscription exists, its own trial
+  // governs (Early Activation Promo), not the original signup trial_ends_at.
+  const isLocked=subscriptionStatus==="active"?false:(subscriptionStatus==="trialing"?!(hasStripeSubscription||(trialEndsAt&&new Date(trialEndsAt)>new Date())):true);
   // Client-side mirror of the enforce_org_not_locked trigger (0018) -- called at the top of
   // every create/edit mutation (not deletes, matching the trigger's own scope) so a locked
   // org gets one clear message instead of a raw Postgres exception surfacing through flash().
@@ -1737,7 +1747,7 @@ function DealRoom({prospectShareSlug}) {
         // rep-profile source for the Welcome tab's AE card, no extra query needed.
         allContributorIds.length?sb.from("profiles").select("id,email,full_name,avatar_url,title,phone,linkedin_url,calendly_url").in("id",allContributorIds):{data:[]},
         allDealIds.length?sb.from("deal_risk_signals").select("*").in("deal_id",allDealIds):{data:[]},
-        sb.from("organizations").select("name,deal_room_limit,subscription_status,trial_ends_at,onboarding_seen,stage_labels,post_signature_stage_labels").eq("id",mem.org_id).single(),
+        sb.from("organizations").select("name,deal_room_limit,subscription_status,trial_ends_at,stripe_subscription_id,onboarding_seen,stage_labels,post_signature_stage_labels").eq("id",mem.org_id).single(),
         sb.from("profiles").select("full_name,email,avatar_url,title").eq("id",session.user.id).single(),
       ]);
       if(cancelled)return;
@@ -1751,6 +1761,7 @@ function DealRoom({prospectShareSlug}) {
       setDealRoomLimit(orgRow?.deal_room_limit||10);
       setSubscriptionStatus(orgRow?.subscription_status||"trialing");
       setTrialEndsAt(orgRow?.trial_ends_at||null);
+      setHasStripeSubscription(!!orgRow?.stripe_subscription_id);
       setShowWelcome(orgRow?.onboarding_seen===false);
       setStageLabels({...DEFAULT_STAGE_LABELS,...(orgRow?.stage_labels||{})});
       setPostSignatureStageLabels({...DEFAULT_POST_SIGNATURE_STAGE_LABELS,...(orgRow?.post_signature_stage_labels||{})});

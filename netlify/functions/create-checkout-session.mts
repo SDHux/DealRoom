@@ -54,11 +54,24 @@ export default async (req: Request, context: Context) => {
   }
 
   const orgRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/organizations?select=stripe_customer_id&id=eq.${orgId}`,
+    `${SUPABASE_URL}/rest/v1/organizations?select=stripe_customer_id,trial_ends_at&id=eq.${orgId}`,
     { headers: authHeaders }
   );
   const orgRows = orgRes.ok ? await orgRes.json() : [];
   let customerId: string | undefined = orgRows[0]?.stripe_customer_id;
+
+  // Early Activation Promo: everyone already gets a free 14-day trial with no card at
+  // signup (organizations.trial_ends_at, set once at signup -- see
+  // create_organization_with_owner, 0032). If they subscribe before that window closes,
+  // this is an *early* activation, so as an incentive they get 2 months (60 days, measured
+  // from checkout per Mark) free on top, in exchange for putting in a card now. If they
+  // subscribe after their free 14 days are already gone -- including orgs created by a
+  // returning email, whose trial_ends_at is set to signup time itself (0032), closing the
+  // signup-cancel-resignup loop -- there is no Stripe trial at all; they're charged
+  // immediately, since they already had (or forfeited the chance at) their free days.
+  const trialEndsAt = orgRows[0]?.trial_ends_at ? new Date(orgRows[0].trial_ends_at) : null;
+  const isEarlyActivation = !!trialEndsAt && trialEndsAt.getTime() > Date.now();
+  const EARLY_ACTIVATION_TRIAL_DAYS = 60;
 
   if (!customerId) {
     const custRes = await fetch("https://api.stripe.com/v1/customers", {
@@ -89,7 +102,7 @@ export default async (req: Request, context: Context) => {
       customer: customerId!,
       "line_items[0][price]": priceId,
       "line_items[0][quantity]": "1",
-      "subscription_data[trial_period_days]": "14",
+      ...(isEarlyActivation ? { "subscription_data[trial_period_days]": String(EARLY_ACTIVATION_TRIAL_DAYS) } : {}),
       success_url: `${origin}/?checkout=success`,
       cancel_url: `${origin}/?checkout=cancel`,
       client_reference_id: orgId,
