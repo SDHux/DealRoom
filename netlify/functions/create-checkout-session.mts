@@ -89,6 +89,7 @@ export default async (req: Request, context: Context) => {
       customer: customerId!,
       "line_items[0][price]": priceId,
       "line_items[0][quantity]": "1",
+      "subscription_data[trial_period_days]": "14",
       success_url: `${origin}/?checkout=success`,
       cancel_url: `${origin}/?checkout=cancel`,
       client_reference_id: orgId,
