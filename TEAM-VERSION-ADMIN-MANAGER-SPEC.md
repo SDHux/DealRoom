@@ -122,3 +122,28 @@ Surface this as a compact per-deal indicator in the rep drill-in view (e.g., "3 
 6. Manual QA: create a test org with 2+ members at different roles, confirm a `member` only sees their own assigned deals, confirm `owner`/`admin` see everything and the Manager Overview numbers match.
 
 *Sources: direct inspection of `supabase/migrations/0002_organizations_and_membership.sql`, `0003_deals.sql`, `0010_org_invitations.sql`, `0015_meddpic_overrides.sql`, `netlify/functions/create-checkout-session.mts`, `netlify/functions/create-portal-session.mts`, and the `DealRoom`/Team tab code in `app.jsx` (this session, September 12, 2026); scope confirmed directly with Mark, including the 1:1-coaching purpose behind the Manager Overview and the explicit decision to descope automated analytics/red-flag signals for this pass.*
+
+## Guardrails against regressing the Single-tier experience
+
+Mark's explicit concern: he doesn't want to run one shared backend if it means QA'ing every Team-tier change against the solo product, or worrying that a Team feature quietly breaks the experience paying Single customers already rely on. The answer isn't a second codebase (see rationale below) — a full fork throws away the multi-seat/invite mechanism that already works today and doubles every future maintenance cost — the answer is making Single-tier regression structurally hard to cause, not just something to remember to check.
+
+**Why not a separate product/backend:** a second repo + second Supabase project + second Netlify deploy would give real isolation, but at the cost of maintaining every future bug fix and improvement twice, and it eliminates the upgrade path that already works (a solo user inviting a teammate today just works, via `org_invitations`; forking would turn that into an account migration between two systems). The guardrails below get the same practical protection without that cost.
+
+1. **RLS is the enforcement boundary, and it's structurally safe for solo orgs.** The `assigned_to` restriction in this spec only restricts a `member`-role user. A one-person org's sole user is always `owner` (0002's one-owner-per-org constraint), and `current_org_role(org_id) in ('owner','admin')` always evaluates true for an owner. This isn't "we tested it and it seemed fine" — it's mathematically impossible for a solo org's own visibility to change under this policy. Any future edit to this policy should be checked against this invariant explicitly (does a 1-member org still resolve to `owner`-sees-everything?) rather than spot-tested.
+
+2. **Gate new UI by role/teammate-count, not by hiding it with CSS.** The Manager Overview tab and any "reassign this deal" control should be gated behind the same kind of `current_org_role(orgId) in ('owner','admin')` check the Billing tab already uses, ideally combined with "this org has more than one member" — so a solo account never mounts the new components at all. Zero rendering means zero blast radius from any bug in the new screen for every existing customer today.
+
+3. **Test schema/RLS changes against a disposable copy before production.** Before running the `assigned_to` migration and the `deals_select` policy swap against the live database:
+   - Confirm the current Supabase plan tier (still an open item from the basecamp plan — check the dashboard). Paid tiers support database branching: a disposable copy of the schema to run the migration and new RLS policy against seeded multi-role test data first.
+   - If the current tier doesn't support branching, fall back to a second, throwaway Supabase project seeded from a schema dump, used only to test this migration, then discarded.
+   - Either way, seed a test org with 3+ members at different roles (owner, admin, two members with different assigned deals) and confirm each role sees exactly what it should before the migration touches production.
+
+4. **Use Netlify deploy previews for the app-layer changes.** Already available with no extra setup — click through the Manager Overview and the tightened visibility behavior on a preview URL before merging to `main`.
+
+5. **Keep a standing "solo regression check" list, not a one-time test.** Any future PR touching `deals`, `organization_members`, or role checks should run through: log in as a 1-person org, confirm all of that org's deals are still visible, confirm no Team-only UI renders, confirm checkout/billing is unaffected. This turns "worry about it every time" into "run this five-item list every time."
+
+6. **Keep the rollback ready, not just the forward migration.** Document the exact `drop policy` / recreate-old-policy SQL for the current org-wide `deals_select` policy alongside the new migration, so if anything behaves unexpectedly in production after the swap, there's a known-good, fast revert rather than a scramble.
+
+## Readiness to hand this to Claude Code
+
+The spec above, plus these guardrails, is enough to start building. The genuinely open items (admin billing permission, admin-promotes-to-admin, reassignment audit trail, whether owner/admin show in the rank-stack, exact mapping-completeness checklist, and confirming the Supabase plan tier for the staging approach) don't need to block a start — Claude Code should default to the more conservative option on each (billing stays owner-only, promotion stays owner-only, log reassignments, exclude owner/admin from the rank-stack unless they're also a working rep) and flag each default explicitly rather than silently deciding, so Mark can correct any of them on review rather than before work begins.
