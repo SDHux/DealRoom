@@ -73,7 +73,7 @@ export default async (req: Request, context: Context) => {
   const isEarlyActivation = !!trialEndsAt && trialEndsAt.getTime() > Date.now();
   const EARLY_ACTIVATION_TRIAL_DAYS = 60;
 
-  if (!customerId) {
+  async function createStripeCustomer(): Promise<string | Response> {
     const custRes = await fetch("https://api.stripe.com/v1/customers", {
       method: "POST",
       headers: { Authorization: `Bearer ${stripeKey}`, "Content-Type": "application/x-www-form-urlencoded" },
@@ -81,36 +81,76 @@ export default async (req: Request, context: Context) => {
     });
     if (!custRes.ok) return json({ error: "Couldn't create Stripe customer", detail: await custRes.text() }, 500);
     const customer = await custRes.json();
-    customerId = customer.id;
 
     // SECURITY DEFINER RPC (0018) -- the only path allowed to write stripe_customer_id;
     // a plain client/REST update is blocked at the column-privilege level.
     const setRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/set_org_stripe_customer_id`, {
       method: "POST",
       headers: { ...authHeaders, "Content-Type": "application/json" },
-      body: JSON.stringify({ p_org_id: orgId, p_customer_id: customerId }),
+      body: JSON.stringify({ p_org_id: orgId, p_customer_id: customer.id }),
     });
     if (!setRes.ok) return json({ error: "Couldn't save Stripe customer id", detail: await setRes.text() }, 500);
+    return customer.id as string;
+  }
+
+  if (!customerId) {
+    const result = await createStripeCustomer();
+    if (result instanceof Response) return result;
+    customerId = result;
   }
 
   const origin = req.headers.get("origin") || "https://mybivy.com";
-  const sessionRes = await fetch("https://api.stripe.com/v1/checkout/sessions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${stripeKey}`, "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      mode: "subscription",
-      customer: customerId!,
-      "line_items[0][price]": priceId,
-      "line_items[0][quantity]": "1",
-      ...(isEarlyActivation ? { "subscription_data[trial_period_days]": String(EARLY_ACTIVATION_TRIAL_DAYS) } : {}),
-      success_url: `${origin}/?checkout=success`,
-      cancel_url: `${origin}/?checkout=cancel`,
-      client_reference_id: orgId,
-    }),
-  });
-  if (!sessionRes.ok) return json({ error: "Couldn't create checkout session", detail: await sessionRes.text() }, 500);
-  const session = await sessionRes.json();
 
+  async function createCheckoutSession(forCustomerId: string) {
+    return fetch("https://api.stripe.com/v1/checkout/sessions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${stripeKey}`, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        mode: "subscription",
+        customer: forCustomerId,
+        "line_items[0][price]": priceId,
+        "line_items[0][quantity]": "1",
+        ...(isEarlyActivation ? { "subscription_data[trial_period_days]": String(EARLY_ACTIVATION_TRIAL_DAYS) } : {}),
+        success_url: `${origin}/?checkout=success`,
+        cancel_url: `${origin}/?checkout=cancel`,
+        client_reference_id: orgId,
+      }),
+    });
+  }
+
+  let sessionRes = await createCheckoutSession(customerId!);
+
+  // Orgs whose stripe_customer_id was saved back when Stripe was still in test/sandbox
+  // mode hold a customer id that simply doesn't exist in live mode (test and live data are
+  // fully separate in Stripe even though ids look identical). Stripe reports that as a 400
+  // resource_missing error on the `customer` param. Rather than leaving those pre-existing
+  // trial accounts permanently unable to upgrade, detect that one specific failure and
+  // transparently mint a fresh live-mode customer, save it over the stale id, and retry
+  // once. Any other checkout failure (bad price id, card errors, etc.) is returned as-is.
+  if (!sessionRes.ok) {
+    const errText = await sessionRes.text();
+    let isStaleCustomer = false;
+    try {
+      const errBody = JSON.parse(errText);
+      isStaleCustomer = errBody?.error?.code === "resource_missing" && errBody?.error?.param === "customer";
+    } catch {
+      isStaleCustomer = /No such customer/i.test(errText);
+    }
+
+    if (isStaleCustomer) {
+      const result = await createStripeCustomer();
+      if (result instanceof Response) return result;
+      customerId = result;
+      sessionRes = await createCheckoutSession(customerId);
+      if (!sessionRes.ok) {
+        return json({ error: "Couldn't create checkout session", detail: await sessionRes.text() }, 500);
+      }
+    } else {
+      return json({ error: "Couldn't create checkout session", detail: errText }, 500);
+    }
+  }
+
+  const session = await sessionRes.json();
   return json({ url: session.url });
 };
 
