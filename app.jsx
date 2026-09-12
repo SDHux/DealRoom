@@ -1135,7 +1135,11 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
 
   const sendInvite=async()=>{
     if(!inviteEmail.trim())return;
-    const {error:err}=await sb.from("org_invitations").insert({org_id:orgId,email:inviteEmail.trim().toLowerCase(),role:inviteRole});
+    // invited_by is required (not null + RLS with-check invited_by = auth.uid()) -- omitting
+    // it made every invite fail with "new row violates row-level security policy", 100% of
+    // the time, since this table's insert policy has no way to treat a null invited_by as
+    // the caller.
+    const {error:err}=await sb.from("org_invitations").insert({org_id:orgId,email:inviteEmail.trim().toLowerCase(),role:inviteRole,invited_by:myUserId});
     if(err){setError(err.code==="23505"?"There's already a pending invite for that email.":"Couldn't send invite");return;}
     setInviteEmail("");setError("");
     load();
