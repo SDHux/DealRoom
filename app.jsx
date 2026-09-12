@@ -73,6 +73,7 @@ function mapDealFromDb(row) {
     id: row.id,
     orgId: row.org_id,
     createdBy: row.created_by,
+    assignedTo: row.assigned_to || row.created_by,
     // Only present on the prospect-RPC path (get_deal_for_prospect, 0016) which embeds
     // these directly since a real prospect's own RLS can't read profiles/organizations.
     // The rep path resolves the same two fields itself, from data it's already fetching
@@ -84,6 +85,10 @@ function mapDealFromDb(row) {
     title: row.title,
     stage: row.stage,
     value: fmtCurrency(row.value_amount, row.currency),
+    // Raw numeric, alongside the formatted `value` string above -- the Manager Overview
+    // needs to sum across deals, which a pre-formatted currency string can't do.
+    valueAmount: row.value_amount || 0,
+    currency: row.currency || "USD",
     closeDate: row.close_date,
     createdAt: row.created_at,
     logo: row.logo_initials,
@@ -212,6 +217,66 @@ function riskFlags(deal) {
 // "on" mirrors P.green/alpine, the other two are the mockup's own risk/cold dot colors.
 const RISK_DOT_COLOR = { cold: "#8A6B63", risk: "#E0A94C", on: "#2C6E63" };
 
+// Deal mapping completeness, for the Manager Overview rep drill-in (TEAM-VERSION-ADMIN-
+// MANAGER-SPEC.md). Explicitly NOT a health/red-flag score -- just "what's filled in vs.
+// not," using data the rep already put in the deal room. Never aggregated across deals or
+// used to rank/sort reps (that would start to look like the analytics scoring Mark
+// explicitly descoped) -- deal-by-deal and descriptive only.
+
+// Mirrors the MEDDPIC tab's own derivation (see the tab==="meddpic" render block) exactly,
+// so "filled" here means the same thing a rep would see if they opened that tab -- a
+// stored override counts, and so does content the tab already derives for free from
+// Discovery/Stakeholders/Action Plan. decisionCriteria and decisionProcess have no
+// derivation path in the product today (the MEDDPIC tab shows "Not enough data yet" for
+// both unless manually overridden) -- that's a real, pre-existing gap this indicator
+// surfaces rather than papers over.
+function meddpicFilledCount(deal) {
+  const override = deal.meddpic || {};
+  const hasOverride = k => !!(override[k] && String(override[k]).trim());
+  const champions = deal.stakeholders.filter(s => s.designation === "champion");
+  const decisionMakers = deal.stakeholders.filter(s => s.designation === "decision-maker");
+  const paperProcessTasks = deal.mapItems.filter(t => t.phase === "Paper Process");
+  const checks = [
+    hasOverride("metrics") || (deal.discovery.topOutcomes || []).length > 0 || GOAL_PERIODS.some(p => (deal.discovery.goals?.[p] || []).length > 0),
+    hasOverride("economicBuyer") || decisionMakers.length > 0,
+    hasOverride("decisionCriteria"),
+    hasOverride("decisionProcess"),
+    hasOverride("paperProcess") || paperProcessTasks.length > 0,
+    hasOverride("identifyPain") || (deal.discovery.challenges || []).length > 0,
+    hasOverride("champion") || champions.length > 0,
+  ];
+  return checks.filter(Boolean).length;
+}
+
+// Generic "has this jsonb blob actually been touched" check for discovery/execSummary --
+// both are free-form (strings, arrays, and {period: [...]} goal maps), so this doesn't
+// assume specific field names, just "any array has entries or any string is non-empty,"
+// one level deep.
+function jsonbHasContent(obj) {
+  if (!obj || typeof obj !== "object") return false;
+  return Object.values(obj).some(v => {
+    if (Array.isArray(v)) return v.length > 0;
+    if (v && typeof v === "object") return Object.values(v).some(vv => Array.isArray(vv) ? vv.length > 0 : !!vv);
+    return !!v;
+  });
+}
+
+// DEFAULT (flagged per spec open question 5): kept exactly as written in the spec --
+// stakeholders / MEDDPIC (all 7 elements) / discovery+exec-summary / tasks planned, shown
+// as "N of 4 mapping areas complete." Mark can ask for a different or more granular
+// checklist on review.
+function mappingCompleteness(deal) {
+  const meddpicFilled = meddpicFilledCount(deal);
+  const activeItems = deal.activeSequenceView === "post_signature" ? deal.experienceItems : deal.mapItems;
+  const areas = {
+    stakeholders: deal.stakeholders.length > 0,
+    meddpic: meddpicFilled === 7,
+    discovery: jsonbHasContent(deal.discovery) && jsonbHasContent(deal.execSummary),
+    tasks: activeItems.length > 0,
+  };
+  return { areas, meddpicFilled, completeCount: Object.values(areas).filter(Boolean).length };
+}
+
 // Primary "On Track"/"Watch"/"At Risk" status -- a rules-based comparison of the deal's
 // actual Action Plan progress against how much of its own timeline (creation to close
 // date) has elapsed. One source of truth for both the header pill and the Analytics Deal
@@ -308,6 +373,25 @@ const LOGO_MARK = (
   </svg>
 );
 
+// Module-level (not a local const inside DealRoom, where it originally lived) so that
+// ManagerOverviewScreen -- a sibling component, not nested inside DealRoom -- can also
+// render <style>{CSS}</style> on its own full-screen replace. A component-local CSS would
+// silently resolve to the browser's own global `window.CSS` (the CSS Typed OM object)
+// inside ManagerOverviewScreen instead of throwing a ReferenceError, which is exactly what
+// happened here: React error #31, "objects are not valid as a react child", crashing the
+// entire Team Overview screen.
+const CSS=`@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:${P.bg}}::-webkit-scrollbar-thumb{background:${P.borderDark};border-radius:3px}
+input,select,textarea{font-family:inherit;outline:none;}
+input:focus,select:focus,textarea:focus{border-color:${P.accent}!important;box-shadow:0 0 0 3px ${P.accentLight};}
+.hr:hover{background:${P.bg}!important}.hd:hover{background:${P.bg}!important;cursor:pointer}.hv:hover{opacity:.82}
+.fade{animation:fi .2s ease}@keyframes fi{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+.shim>div{animation:sh 1.5s ease infinite alternate;background:linear-gradient(90deg,#f1f5f9,#e9edf5,#f1f5f9);background-size:200%;border-radius:4px;}@keyframes sh{from{background-position:0%}to{background-position:100%}}
+select option{background:#fff}
+.mono{font-family:${P.fontMono};}
+.headline{font-family:${P.fontDisplay};font-weight:700;}`;
+
 
 // Fixed order, not derived from Object.keys/entries -- a JSONB blob's key order depends on
 // however it was written (a different AI-extraction or import run could produce these in
@@ -342,6 +426,12 @@ const POST_SIGNATURE_STAGE_DEFS = [
   {key:"golive",desc:"Final checks and go-live activation",phase:"Go Live / Activation"},
 ];
 const DEFAULT_POST_SIGNATURE_STAGE_LABELS = {kickoff:"Kickoff & Intro",requirements:"Requirements",implementation:"Implementation",training:"Training",golive:"Go Live / Activation"};
+
+// deals.stage (0003) -- the 7-value sales-cycle stage used by the Manager Overview's
+// per-rep stage breakdown. Distinct from STAGE_DEFS above, which is the Action Plan
+// close-sequence phase set on deal_tasks, not this column.
+const DEAL_STAGES = ["Discovery","Evaluation","Trial","Proposal","Negotiation","Closed Won","Closed Lost"];
+const CLOSED_DEAL_STAGES = ["Closed Won","Closed Lost"];
 
 // Literal DB phase string -> whatever this org calls that stage today (custom label, or the
 // default if never renamed). Used anywhere a phase name is *displayed*; filtering/grouping
@@ -1464,8 +1554,13 @@ const DeleteDealModal = ({deal,onConfirm,onClose}) => {
 // Company name/deal title/value/close date could only ever be set once, at creation --
 // no edit path existed afterward, even though value and close date in particular change
 // constantly as a real deal progresses.
-const EditDealModal = ({deal,onSave,onClose}) => {
-  const [draft,setDraft]=useState({company:deal.company||"",title:deal.title||"",value:(deal.value||"").replace(/[^0-9.]/g,""),closeDate:deal.closeDate||""});
+// members/canReassign are optional (undefined for a plain member, who never gets the
+// "Assigned To" control) -- see the deal-settings entry point in DealRoom for how they're
+// threaded through. The other entry point for reassignment is the Manager Overview
+// drill-in banner (setManagerViewRep + reassignDeal directly), so both surfaces the spec
+// suggested ("from the deal's settings, or directly from the Manager Overview") exist.
+const EditDealModal = ({deal,members,canReassign,onSave,onClose}) => {
+  const [draft,setDraft]=useState({company:deal.company||"",title:deal.title||"",value:(deal.value||"").replace(/[^0-9.]/g,""),closeDate:deal.closeDate||"",assignedTo:deal.assignedTo||""});
   const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
   return (<div style={{position:"fixed",inset:0,background:"rgba(27,31,35,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
     <div style={{background:P.surface,borderRadius:16,width:440,padding:"24px",boxShadow:"0 24px 64px rgba(0,0,0,0.16)"}}>
@@ -1475,10 +1570,25 @@ const EditDealModal = ({deal,onSave,onClose}) => {
       </div>
       <div style={{marginBottom:12}}><label style={lbl0}>Company Name</label><input value={draft.company} onChange={e=>setDraft(d=>({...d,company:e.target.value}))} style={inp}/></div>
       <div style={{marginBottom:12}}><label style={lbl0}>Deal Title</label><input value={draft.title} onChange={e=>setDraft(d=>({...d,title:e.target.value}))} style={inp}/></div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:18}}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:canReassign&&members?.length?12:18}}>
         <div><label style={lbl0}>Value</label><input value={draft.value} onChange={e=>setDraft(d=>({...d,value:e.target.value}))} style={inp}/></div>
         <div><label style={lbl0}>Close Date</label><input type="date" value={draft.closeDate} onChange={e=>setDraft(d=>({...d,closeDate:e.target.value}))} style={inp}/></div>
       </div>
+      {canReassign&&members?.length>0&&<div style={{marginBottom:18}}>
+        <label style={lbl0}>Assigned To</label>
+        <select value={draft.assignedTo} onChange={e=>setDraft(d=>({...d,assignedTo:e.target.value}))} style={inp}>
+          {/* assigned_to only nulls out via ON DELETE SET NULL (0033) when the auth.users
+              row itself is gone -- removing someone from the org (deleting their
+              organization_members row) leaves assigned_to pointing at a user id absent
+              from `members`. Without this fallback option, the <select>'s value wouldn't
+              match any <option> and the browser would silently render the first member
+              as "selected" while draft.assignedTo still held the real (different) id --
+              so clicking Save with the dropdown untouched would reassign to whoever
+              happened to be first in the list, not a no-op. */}
+          {!members.some(m=>m.user_id===draft.assignedTo)&&draft.assignedTo&&<option value={draft.assignedTo}>Former team member</option>}
+          {members.map(m=><option key={m.user_id} value={m.user_id}>{m.profile?.full_name||m.profile?.email||"Unnamed"}{m.role!=="member"?` (${m.role})`:""}</option>)}
+        </select>
+      </div>}
       <div style={{display:"flex",gap:10}}>
         <button onClick={()=>{if(!draft.company.trim())return;onSave(draft);}} style={{flex:1,padding:"11px 20px",background:P.accent,border:"none",borderRadius:7,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>Save Changes</button>
         <button onClick={onClose} style={{padding:"11px 18px",background:"none",border:`1px solid ${P.border}`,borderRadius:7,color:P.textSec,fontSize:13,cursor:"pointer"}}>Cancel</button>
@@ -1563,6 +1673,85 @@ const TaskModal = ({task,phases,onSave,onDelete,onClose,calendlyAvailable,itemLa
       </div>
     </div>
   </div>);
+};
+
+// Manager Overview -- new screen from TEAM-VERSION-ADMIN-MANAGER-SPEC.md. Rendered only
+// for owner/admin, in an org with more than one member (see the gate on the button that
+// opens this, in DealRoom's sidebar). Built to sit next to a rep during a 1:1: a plain
+// data rollup -- active sales-cycle counts, per-stage breakdown, rank-stacked by pipeline
+// dollar value -- with explicitly NO automated analytics/red-flag scoring (Mark's own
+// descope for this pass). `deals` is whatever the caller already has loaded for owner/
+// admin -- org-wide under the tightened RLS (0035) -- so this needs no query of its own
+// beyond the org roster.
+const ManagerOverviewScreen = ({members,deals,onSelectRep,onClose}) => {
+  // Grouped once up front (not re-filtered per member) -- O(deals) instead of
+  // O(members × deals) below.
+  const dealsByRep=deals.reduce((acc,d)=>{(acc[d.assignedTo]=acc[d.assignedTo]||[]).push(d);return acc;},{});
+  // DEFAULT (flagged per spec open question 4): owner/admin are excluded from the
+  // rank-stack unless they're also a working rep with deals assigned to them. Mark can
+  // ask for owner/admin to always show, or never show, on review.
+  const rows=members
+    .map(m=>{
+      const repDeals=dealsByRep[m.user_id]||[];
+      const activeDeals=repDeals.filter(d=>!CLOSED_DEAL_STAGES.includes(d.stage));
+      // Grouped by currency, not blindly summed into one number -- deals carry their own
+      // currency (deals.currency), and formatting a cross-currency sum as a single "$"
+      // figure would silently misstate pipeline value for any org with mixed-currency
+      // deals. Currently unreachable in practice (nothing in the app sets currency away
+      // from the DB default "USD" yet), but cheap to get right now rather than later.
+      const valueByCurrency=activeDeals.reduce((acc,d)=>{acc[d.currency]=(acc[d.currency]||0)+(d.valueAmount||0);return acc;},{});
+      // Sort key only -- ranking across currencies with no FX rate anywhere in this
+      // codebase is a known simplification (raw sum, not a real cross-currency total);
+      // building actual currency conversion is out of scope here.
+      const pipelineValue=Object.values(valueByCurrency).reduce((s,v)=>s+v,0);
+      const stageCounts=DEAL_STAGES.filter(s=>!CLOSED_DEAL_STAGES.includes(s))
+        .map(s=>[s,activeDeals.filter(d=>d.stage===s).length]).filter(([,c])=>c>0);
+      return {...m,repDeals,activeDeals,pipelineValue,valueByCurrency,stageCounts};
+    })
+    .filter(m=>m.role==="member"||m.repDeals.length>0)
+    .sort((a,b)=>b.pipelineValue-a.pipelineValue);
+
+  const nameFor=m=>m.profile?.full_name||m.profile?.email||"Unnamed";
+
+  return <div style={{fontFamily:"'Inter','Segoe UI',sans-serif",background:P.bg,minHeight:"100vh",color:P.text}}>
+    <style>{CSS}</style>
+    <div style={{background:P.ink,padding:"18px 32px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
+      <div style={{display:"flex",alignItems:"center",gap:12}}>
+        <div style={{width:36,height:36,borderRadius:9,background:"rgba(255,255,255,0.08)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><div style={{width:20,height:20}}>{LOGO_MARK}</div></div>
+        <div><div className="headline" style={{fontSize:19,color:"#fff",lineHeight:1}}>Team Overview</div><div className="mono" style={{fontSize:9.5,letterSpacing:"0.08em",textTransform:"uppercase",color:"rgba(255,255,255,0.4)",marginTop:3}}>Manager view</div></div>
+      </div>
+      <button onClick={onClose} style={{padding:"9px 16px",background:"rgba(255,255,255,0.08)",border:"none",borderRadius:7,color:"#fff",fontSize:12.5,fontWeight:600,cursor:"pointer"}}>← Back to My Deals</button>
+    </div>
+    <div style={{maxWidth:960,margin:"0 auto",padding:"32px 24px"}}>
+      <div style={{fontSize:13,color:P.textSec,marginBottom:6,lineHeight:1.6,maxWidth:680}}>Active sales cycles, pipeline value, and stage mix per rep — ranked by pipeline dollar value. Click a rep to review their bivies with them. No automated scoring here by design — just what's actually in each deal room.</div>
+      <div style={{fontSize:11.5,color:P.textMute,marginBottom:22,lineHeight:1.6,maxWidth:680}}>Note: every deal defaults to the "Discovery" stage today and nothing in the app yet advances it, so the stage breakdown below will look flat until stage-changing is built — flagging this now rather than leaving it a silent surprise.</div>
+      {rows.length===0?<div style={{padding:40,textAlign:"center",color:P.textMute,fontSize:13}}>No reps with assigned deals yet.</div>
+      :<div style={{display:"grid",gap:10}}>
+        {rows.map((m,i)=>(
+          <div key={m.user_id} onClick={()=>onSelectRep(m.user_id,nameFor(m))} style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:12,padding:"18px 22px",display:"flex",alignItems:"center",gap:18,cursor:"pointer",boxShadow:"0 1px 2px rgba(27,31,35,0.05)"}}>
+            <div className="mono" style={{width:22,fontSize:13,color:P.textMute,fontWeight:700,flexShrink:0}}>#{i+1}</div>
+            {m.profile?.avatar_url?
+              <img src={m.profile.avatar_url} alt="" style={{width:40,height:40,borderRadius:"50%",objectFit:"cover",flexShrink:0}}/>
+            :<div className="headline" style={{width:40,height:40,borderRadius:"50%",background:P.accentLight,color:P.accentMid,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>{initialsOf(nameFor(m))}</div>}
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}>
+                <span style={{fontSize:15,fontWeight:700,color:P.text}}>{nameFor(m)}</span>
+                {m.role!=="member"&&<Badge label={m.role} color={P.textSec} bg={P.bg} border={P.border} small/>}
+              </div>
+              <div style={{fontSize:12,color:P.textSec}}>{m.activeDeals.length} active sales cycle{m.activeDeals.length===1?"":"s"}</div>
+              {m.stageCounts.length>0&&<div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>
+                {m.stageCounts.map(([s,c])=><span key={s} style={{fontSize:10.5,padding:"2px 8px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:10,color:P.textSec}}>{s} · {c}</span>)}
+              </div>}
+            </div>
+            <div style={{textAlign:"right",flexShrink:0}}>
+              <div className="mono" style={{fontSize:17,fontWeight:800,color:P.text}}>{Object.entries(m.valueByCurrency).map(([cur,amt])=>fmtCurrency(amt,cur)).join(" + ")||fmtCurrency(0)}</div>
+              <div style={{fontSize:10.5,color:P.textMute,marginTop:2}}>active pipeline</div>
+            </div>
+          </div>
+        ))}
+      </div>}
+    </div>
+  </div>;
 };
 
 function DealRoom({prospectShareSlug}) {
@@ -1650,6 +1839,13 @@ function DealRoom({prospectShareSlug}) {
   const [activeLog,setActiveLog]=useState(null);
   const [selCat,setSelCat]=useState("All");
   const [initError,setInitError]=useState(null);
+  // Manager Overview (TEAM-VERSION-ADMIN-MANAGER-SPEC.md): org roster for owner/admin
+  // (see the effect below), whether the full-screen Team Overview is showing, and --
+  // while drilled into one rep's bivy -- which rep, filtering the sidebar/main view down
+  // to just their assigned deals. managerViewRep is null in every other view.
+  const [orgMembers,setOrgMembers]=useState([]);
+  const [showManagerOverview,setShowManagerOverview]=useState(false);
+  const [managerViewRep,setManagerViewRep]=useState(null); // null | {id, name}
 
   // Rep path only: track the Supabase Auth session. Errors here (e.g. a network/CORS
   // problem reaching Supabase) are surfaced instead of leaving the app stuck silently on
@@ -1736,7 +1932,11 @@ function DealRoom({prospectShareSlug}) {
       // when that instrumentation gets built.
       const allDocIds=mapped.flatMap(d=>d.content.map(c=>c.id));
       const allDealIds=mapped.map(d=>d.id);
-      const allContributorIds=Array.from(new Set(mapped.flatMap(d=>d.contributorIds)));
+      // Includes each deal's current assignedTo, not just contributorIds (created_by +
+      // whoever's touched a stakeholder/task/document) -- a deal freshly reassigned to a
+      // rep who hasn't added anything to it yet would otherwise have no profile fetched
+      // for them, and repProfile below would wrongly come back null.
+      const allContributorIds=Array.from(new Set([...mapped.flatMap(d=>d.contributorIds),...mapped.map(d=>d.assignedTo)].filter(Boolean)));
       const [{data:viewStats},{data:visits},{data:contributors},{data:riskRows},{data:orgRow},{data:myProfileRow}]=await Promise.all([
         allDocIds.length?sb.from("document_view_stats").select("*").in("document_id",allDocIds):{data:[]},
         allDealIds.length?sb.from("deal_visits").select("*, deal_visit_actions(*)").in("deal_id",allDealIds).order("started_at",{ascending:false}):{data:[]},
@@ -1794,8 +1994,13 @@ function DealRoom({prospectShareSlug}) {
           return {id,name:name||"Unknown",initials:initialsOf(name)||"?",count:d.contributorCounts[id]||1};
         }),
         orgName,
+        // Follows the deal's CURRENT assignee, not its creator -- this is the "who does
+        // the prospect see as their rep" card (name/photo/phone/Calendly link), so a
+        // reassigned deal needs to show the new owner, not whoever originally set the
+        // room up. See the matching fix in get_deal_for_prospect (0037) for the same
+        // card on the prospect-facing RPC path.
         repProfile:(()=>{
-          const p=profileById[d.createdBy];
+          const p=profileById[d.assignedTo];
           if(!p)return null;
           const name=p.full_name||p.email;
           return {name,email:p.email,photo:p.avatar_url,title:p.title,phone:p.phone,linkedin:p.linkedin_url,calendly:p.calendly_url,initials:initialsOf(name)};
@@ -1816,6 +2021,39 @@ function DealRoom({prospectShareSlug}) {
     })();
     return ()=>{cancelled=true;};
   },[session,prospectShareSlug,refreshKey]);
+
+  // Manager Overview support (TEAM-VERSION-ADMIN-MANAGER-SPEC.md): the org roster,
+  // merged with profiles for display names/avatars -- same merge-in-JS pattern as
+  // SettingsModal's Team tab (organization_members and profiles both reference
+  // auth.users independently, no direct FK PostgREST can embed). Owner/admin only, and
+  // only once org/role are resolved -- a plain member never pays for this query, since
+  // they can't see the Manager Overview or reassign anything anyway.
+  useEffect(()=>{
+    if(prospectShareSlug||!orgId||!(myRole==="owner"||myRole==="admin"))return;
+    let cancelled=false;
+    (async()=>{
+      const {data:mem}=await sb.from("organization_members").select("user_id,role").eq("org_id",orgId);
+      if(cancelled)return;
+      const userIds=(mem||[]).map(m=>m.user_id);
+      const {data:profiles}=userIds.length?await sb.from("profiles").select("id,email,full_name,avatar_url").in("id",userIds):{data:[]};
+      if(cancelled)return;
+      const profileById=Object.fromEntries((profiles||[]).map(p=>[p.id,p]));
+      setOrgMembers((mem||[]).map(m=>({...m,profile:profileById[m.user_id]||null})));
+    })();
+    return ()=>{cancelled=true;};
+  },[prospectShareSlug,orgId,myRole]);
+
+  // Resets the active deal selection whenever a manager drills into (or backs out of) a
+  // rep's filtered view -- OR whenever `deals` itself changes underneath the current
+  // selection, e.g. the active deal gets reassigned to a different rep mid-drill-in, or
+  // deleted -- so it never silently keeps showing a deal that isn't even in the
+  // now-visible set. `deals` in the dependency array (not just managerViewRep) is load-
+  // bearing: without it, reassigning or deleting the active deal during a drill-in left
+  // activeId pointing at a no-longer-visible deal until the next manual sidebar click.
+  useEffect(()=>{
+    const visible=managerViewRep?deals.filter(d=>d.assignedTo===managerViewRep.id):deals;
+    if(!visible.find(d=>d.id===activeId))setActiveId(visible[0]?.id??null);
+  },[managerViewRep,deals]);
 
   // Visit-duration heartbeat: a browser can't reliably signal "the tab just closed", so
   // this tracks visible-time via the Page Visibility API and periodically overwrites (not
@@ -1849,7 +2087,12 @@ function DealRoom({prospectShareSlug}) {
     };
   },[prospectVisit]);
 
-  const deal=deals.find(d=>d.id===activeId);
+  // Manager drill-in (TEAM-VERSION-ADMIN-MANAGER-SPEC.md): reuses this same sidebar/main
+  // view, just pre-filtered to one rep's assigned deals instead of "everything I can see"
+  // -- the only place this filter needs applying, since RLS already did the owner/admin-
+  // sees-everything-vs-member-sees-own-only split server-side for `deals` itself.
+  const visibleDeals=managerViewRep?deals.filter(d=>d.assignedTo===managerViewRep.id):deals;
+  const deal=visibleDeals.find(d=>d.id===activeId);
   const flash=msg=>{setToast(msg);setTimeout(()=>setToast(null),2800);};
   // organizations_update RLS (owner-only) already covers this -- whoever can see the welcome
   // overlay is by definition the org's owner, no new RPC needed.
@@ -1883,6 +2126,10 @@ function DealRoom({prospectShareSlug}) {
     const {data:newDeal,error}=await sb.from("deals").insert({
       org_id:orgId,
       created_by:session.user.id,
+      // DEFAULT (TEAM-VERSION-ADMIN-MANAGER-SPEC.md): every deal is assigned to its
+      // creator at creation time; owner/admin can hand it off to a different rep later
+      // (Manager Overview drill-in banner).
+      assigned_to:session.user.id,
       company_name:draft.company,
       primary_contact_name:draft.contact||null,
       title:draft.title||null,
@@ -1944,15 +2191,31 @@ function DealRoom({prospectShareSlug}) {
   const updateDealInfo=async(draft)=>{
     if(guardLocked())return;
     const logo=draft.company.slice(0,2).toUpperCase();
+    // assignedTo only ever arrives here from EditDealModal's owner/admin-only "Assigned
+    // To" control (undefined for anyone else, since that field doesn't render without
+    // canReassign) -- reuses the same reassignDeal write can_manage_deal already allows,
+    // just folded into this one save instead of a second round trip.
     const {error}=await sb.from("deals").update({
       company_name:draft.company,title:draft.title||null,
       value_amount:parseFloat(draft.value)||null,close_date:draft.closeDate||null,
       logo_initials:logo,
+      ...(draft.assignedTo?{assigned_to:draft.assignedTo}:{}),
     }).eq("id",deal.id);
     if(error){flash("Couldn't save changes");return;}
-    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,company:draft.company,title:draft.title,value:fmtCurrency(parseFloat(draft.value)||0),closeDate:draft.closeDate||null,logo}));
+    setDeals(prev=>prev.map(d=>d.id!==deal.id?d:{...d,company:draft.company,title:draft.title,value:fmtCurrency(parseFloat(draft.value)||0),closeDate:draft.closeDate||null,logo,...(draft.assignedTo?{assignedTo:draft.assignedTo}:{})}));
     setShowEditDeal(false);
     flash("Deal updated");
+  };
+
+  // Owner/admin only (can_manage_deal, tightened in 0036 to also cover the deal's
+  // current assignee -- see that migration's comment for why). The deal_assignment_history
+  // trigger (0034) logs the change server-side regardless of this call site, so nothing
+  // extra needs writing here for the audit trail.
+  const reassignDeal=async(dealId,newRepId)=>{
+    const {error}=await sb.from("deals").update({assigned_to:newRepId}).eq("id",dealId);
+    if(error){flash("Couldn't reassign deal");return;}
+    setDeals(prev=>prev.map(d=>d.id!==dealId?d:{...d,assignedTo:newRepId}));
+    flash("Deal reassigned");
   };
 
   // One row = one deal, per Mark's explicit scope call: bulk-onboarding an existing
@@ -2466,18 +2729,6 @@ function DealRoom({prospectShareSlug}) {
 
   const inpS={border:`1px solid ${P.border}`,borderRadius:6,padding:"8px 10px",fontSize:12,color:P.text,background:P.surface,fontFamily:"inherit",outline:"none"};
 
-  const CSS=`@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap');
-*{box-sizing:border-box;margin:0;padding:0}
-::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:${P.bg}}::-webkit-scrollbar-thumb{background:${P.borderDark};border-radius:3px}
-input,select,textarea{font-family:inherit;outline:none;}
-input:focus,select:focus,textarea:focus{border-color:${P.accent}!important;box-shadow:0 0 0 3px ${P.accentLight};}
-.hr:hover{background:${P.bg}!important}.hd:hover{background:${P.bg}!important;cursor:pointer}.hv:hover{opacity:.82}
-.fade{animation:fi .2s ease}@keyframes fi{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
-.shim>div{animation:sh 1.5s ease infinite alternate;background:linear-gradient(90deg,#f1f5f9,#e9edf5,#f1f5f9);background-size:200%;border-radius:4px;}@keyframes sh{from{background-position:0%}to{background-position:100%}}
-select option{background:#fff}
-.mono{font-family:${P.fontMono};}
-.headline{font-family:${P.fontDisplay};font-weight:700;}`;
-
   const LoadingScreen=()=><div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:P.textMute,fontSize:13}}>Loading…</div>;
 
   if(initError){
@@ -2533,25 +2784,52 @@ select option{background:#fff}
         {[["rep","Sales Rep"],["prospect","Prospect"]].map(([v,l])=>(
           <button key={v} onClick={()=>{setViewMode(v);setTab(v==="prospect"?"welcome":"map");}} style={{flex:1,padding:"8px 0",fontSize:12.5,fontWeight:600,color:viewMode===v?"#fff":"rgba(255,255,255,0.5)",background:viewMode===v?P.accent:"transparent",border:"none",borderRadius:7,cursor:"pointer"}}>{l}</button>))}
       </div>
+      {/* Manager drill-in banner -- only ever shown after clicking a rep in the Team
+          Overview (setManagerViewRep), never by any other path. Reassignment lives here
+          (operating on whichever deal is currently active) as the spec's second suggested
+          entry point, alongside EditDealModal's "Assigned To" field ("from the deal's
+          settings, or directly from the Manager Overview when handing off an account"). */}
+      {managerViewRep&&<div style={{background:"rgba(255,255,255,0.06)",borderRadius:9,padding:"10px 12px",marginBottom:16}}>
+        <div style={{fontSize:10.5,letterSpacing:"0.04em",textTransform:"uppercase",color:"rgba(255,255,255,0.5)",marginBottom:5}}>Viewing as manager</div>
+        <div style={{fontSize:13.5,fontWeight:700,color:"#fff",marginBottom:9}}>{managerViewRep.name}'s deals</div>
+        {deal&&orgMembers.length>0&&<div style={{marginBottom:9}}>
+          <div style={{fontSize:10.5,color:"rgba(255,255,255,0.5)",marginBottom:4}}>Reassign "{deal.company}" to</div>
+          <select value={deal.assignedTo} onChange={e=>reassignDeal(deal.id,e.target.value)} style={{width:"100%",padding:"6px 8px",borderRadius:6,border:"1px solid rgba(255,255,255,0.15)",background:"rgba(255,255,255,0.08)",color:"#fff",fontSize:11.5}}>
+            {/* Same stale-assignment guard as EditDealModal's identical control -- see
+                that comment for why this fallback option is needed. */}
+            {!orgMembers.some(m=>m.user_id===deal.assignedTo)&&<option value={deal.assignedTo} style={{color:"#000"}}>Former team member</option>}
+            {orgMembers.map(m=><option key={m.user_id} value={m.user_id} style={{color:"#000"}}>{m.profile?.full_name||m.profile?.email||"Unnamed"}</option>)}
+          </select>
+        </div>}
+        <button onClick={()=>{setManagerViewRep(null);setShowManagerOverview(true);}} style={{width:"100%",padding:"7px 0",background:"rgba(255,255,255,0.1)",border:"none",borderRadius:6,color:"#fff",fontSize:11.5,fontWeight:600,cursor:"pointer"}}>← Back to Team Overview</button>
+      </div>}
       <div style={{flex:1,overflowY:"auto"}}>
         <div className="mono" style={{fontSize:10.5,letterSpacing:"0.08em",textTransform:"uppercase",color:"rgba(255,255,255,0.35)",marginBottom:12,padding:"0 6px"}}>Active Deals</div>
-        {deals.map(d=>{
+        {visibleDeals.map(d=>{
           // A deal with zero Action Plan tasks divided by zero here -- NaN% is an
           // invisible, zero-width bar regardless of selection, which read as "the
           // highlight is broken" for whichever deal happened to have no tasks yet.
           const dp=d.mapItems.length?Math.round(d.mapItems.filter(t=>t.status==="complete").length/d.mapItems.length*100):0;
-          const isA=d.id===activeId;const dFlags=riskFlags(d);const dotColor=RISK_DOT_COLOR[dFlags[0]?.severity||"on"];return(
+          const isA=d.id===activeId;const dFlags=riskFlags(d);const dotColor=RISK_DOT_COLOR[dFlags[0]?.severity||"on"];
+          // Deal mapping completeness -- only surfaced during a manager drill-in (spec:
+          // "a compact per-deal indicator in the rep drill-in view"), never in a rep's own
+          // normal list, where it'd just be noise on every deal, every day.
+          const mc=managerViewRep?mappingCompleteness(d):null;
+          return(
           <div key={d.id} className="hd" onClick={()=>{setActiveId(d.id);setAiOpen(false);setAiText("");setTab(viewMode==="prospect"?"welcome":"map");}} style={{padding:"10px 8px",borderRadius:8,background:isA?"rgba(255,255,255,0.07)":"transparent",marginBottom:2,transition:"all .12s"}}>
             <div style={{display:"flex",alignItems:"center",gap:8}}>
               {d.risk&&<div title={dFlags[0]?.label||"On track"} style={{width:7,height:7,borderRadius:"50%",background:dotColor,flexShrink:0}}/>}
               <div style={{minWidth:0,flex:1}}><div style={{fontSize:13.5,fontWeight:600,color:"#fff",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{d.company}</div><div className="mono" style={{fontSize:11,color:"rgba(255,255,255,0.4)",marginTop:1}}>{d.value}</div></div>
             </div>
             <div style={{marginTop:7}}><div style={{height:3,background:"rgba(255,255,255,0.12)",borderRadius:99,overflow:"hidden"}}><div style={{width:`${dp}%`,height:"100%",background:isA?P.accent:"rgba(255,255,255,0.4)",borderRadius:99}}/></div></div>
+            {mc&&<div title={`Stakeholders ${mc.areas.stakeholders?"✓":"✗"} · MEDDPIC ${mc.meddpicFilled}/7 · Discovery ${mc.areas.discovery?"✓":"✗"} · Tasks ${mc.areas.tasks?"✓":"✗"}`} style={{marginTop:6,fontSize:10.5,color:mc.completeCount===4?"rgba(160,220,190,0.85)":"rgba(255,255,255,0.4)"}}>{mc.completeCount} of 4 mapping areas complete</div>}
           </div>);})}
         {/* Client-side checks only for a clean UX -- the real enforcement is the
             enforce_deal_room_limit and enforce_org_not_locked triggers (0017/0018), which
-            fire regardless of this. */}
-        {isLocked?
+            fire regardless of this. Hidden entirely during a manager drill-in -- creating
+            a deal here would silently assign it to the manager, not the rep being viewed,
+            which isn't what "viewing their bivy" should ever do. */}
+        {managerViewRep?null:isLocked?
           <div style={{marginTop:8,padding:11,fontSize:12,color:"rgba(255,255,255,0.5)",textAlign:"center",lineHeight:1.5}}>Your trial has ended — upgrade to create deal rooms</div>
         :deals.length>=dealRoomLimit?
           <div style={{marginTop:8,padding:11,fontSize:12,color:"rgba(255,255,255,0.5)",textAlign:"center",lineHeight:1.5}}>You've reached your plan's limit of {dealRoomLimit} deal rooms</div>
@@ -2562,10 +2840,27 @@ select option{background:#fff}
           <img src={myProfile.photo} alt={myProfile.name} style={{width:34,height:34,borderRadius:"50%",objectFit:"cover",flexShrink:0}}/>
         :<div style={{width:34,height:34,borderRadius:"50%",background:P.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color:"#fff",flexShrink:0}}>{myProfile?.initials||"?"}</div>}
         <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#fff",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{myProfile?.name||session?.user?.email||"…"}</div>{myProfile?.title&&<div style={{fontSize:11,color:"rgba(255,255,255,0.4)",marginTop:1}}>{myProfile.title}</div>}</div>
+        {/* DEFAULT (flagged, guardrail #2 from the spec): gated on role AND
+            orgMembers.length>1, not role alone -- a solo Single-tier org never mounts
+            this button (or fetches orgMembers at all, see that effect above), so it has
+            zero blast radius for every existing paying customer. */}
+        {(myRole==="owner"||myRole==="admin")&&orgMembers.length>1&&!managerViewRep&&<button onClick={()=>setShowManagerOverview(true)} title="Team Overview" style={{background:"none",border:"none",color:"rgba(255,255,255,0.75)",fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",gap:5}}><span style={{fontSize:15}}>👥</span>Team</button>}
         {(myRole==="owner"||myRole==="admin")&&<button onClick={()=>setShowSettings(true)} title="Team & Settings" style={{background:"none",border:"none",color:"rgba(255,255,255,0.75)",fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",gap:5}}><span style={{fontSize:21}}>⚙</span>Settings</button>}
         <button onClick={()=>sb.auth.signOut()} title="Sign out" style={{background:"none",border:"none",color:"rgba(255,255,255,0.5)",fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0}}>Sign out</button>
       </div>
     </div>;
+
+  // Manager Overview (TEAM-VERSION-ADMIN-MANAGER-SPEC.md): full-screen replace, same
+  // pattern as the empty-state/main-view split below -- checked before either of those so
+  // it wins regardless of whether the signed-in owner/admin happens to have a `deal`
+  // selected already. No loading state to pass through here -- the sidebar's "Team"
+  // button (the only way to reach this screen) is itself gated on orgMembers.length>1,
+  // so orgMembers is always already populated by the time this can render.
+  if(showManagerOverview){
+    return <ManagerOverviewScreen members={orgMembers} deals={deals}
+      onSelectRep={(repId,repName)=>{setManagerViewRep({id:repId,name:repName});setShowManagerOverview(false);}}
+      onClose={()=>setShowManagerOverview(false)}/>;
+  }
 
   if(!deal){
     // Signed in, org resolved, but zero deals yet -- the old render tree below assumes a
@@ -2576,12 +2871,19 @@ select option{background:#fff}
     // Renders the same sidebarJsx as the main view (not a bare centered message) so a
     // first-time user actually sees they're inside the app -- myBivy branding, their (empty)
     // Active Deals list, settings -- not a blank page with no chrome.
+    //
+    // Also reached mid-drill-in if the rep a manager clicked into has zero assigned deals
+    // -- managerViewRep is checked below to swap in manager-appropriate copy and hide the
+    // "+ New Deal Room" button (creating one here would assign it to the manager, not the
+    // rep being viewed).
     return <div style={{fontFamily:"'Inter','Segoe UI',sans-serif",background:P.bg,minHeight:"100vh",display:"flex",color:P.text}}><style>{CSS}</style>
       {sidebarJsx}
       <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16,padding:24}}>
-        <div style={{fontSize:16,fontWeight:700,color:P.text}}>No deal rooms yet</div>
-        <div style={{fontSize:13,color:P.textSec,maxWidth:420,textAlign:"center",lineHeight:1.6}}>A bivy is a mutual success planning workspace you share with a prospect, next steps, shared content, and action items you both stay aligned on.</div>
-        <button onClick={()=>setShowCreator(true)} style={{padding:"10px 20px",background:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>+ New Deal Room</button>
+        <div style={{fontSize:16,fontWeight:700,color:P.text}}>{managerViewRep?`${managerViewRep.name} has no deal rooms yet`:"No deal rooms yet"}</div>
+        {!managerViewRep&&<div style={{fontSize:13,color:P.textSec,maxWidth:420,textAlign:"center",lineHeight:1.6}}>A bivy is a mutual success planning workspace you share with a prospect, next steps, shared content, and action items you both stay aligned on.</div>}
+        {managerViewRep?
+          <button onClick={()=>{setManagerViewRep(null);setShowManagerOverview(true);}} style={{padding:"10px 20px",background:"none",border:`1px solid ${P.border}`,borderRadius:8,color:P.textSec,fontSize:13,fontWeight:600,cursor:"pointer"}}>← Back to Team Overview</button>
+        :<button onClick={()=>setShowCreator(true)} style={{padding:"10px 20px",background:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>+ New Deal Room</button>}
       </div>
       {showCreator&&<DealCreator onSave={createDeal} onImport={importDeals} onClose={()=>setShowCreator(false)} stageLabels={stageLabels}/>}
       {showSettings&&<SettingsModal orgId={orgId} myUserId={session?.user?.id} myRole={myRole} onClose={()=>setShowSettings(false)}/>}
@@ -2631,7 +2933,7 @@ select option{background:#fff}
     {showAddRecording&&<AddRecordingModal onSave={addRecordingDocument} onClose={()=>setShowAddRecording(false)}/>}
     {showEmbedDoc&&<EmbedModal doc={showEmbedDoc} onClose={()=>setShowEmbedDoc(null)}/>}
     {showDeleteDeal&&<DeleteDealModal deal={deal} onClose={()=>setShowDeleteDeal(false)} onConfirm={()=>deleteDeal(deal.id)}/>}
-    {showEditDeal&&<EditDealModal deal={deal} onClose={()=>setShowEditDeal(false)} onSave={updateDealInfo}/>}
+    {showEditDeal&&<EditDealModal deal={deal} members={orgMembers} canReassign={myRole==="owner"||myRole==="admin"} onClose={()=>setShowEditDeal(false)} onSave={updateDealInfo}/>}
 
     {/* MAIN */}
     <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
