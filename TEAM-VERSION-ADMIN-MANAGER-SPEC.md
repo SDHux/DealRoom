@@ -3,6 +3,20 @@
 Last updated: September 12, 2026
 Companion doc: TEAM-VERSION-BASECAMP-PLAN.md (pricing/packaging + capacity audit — this doc is the feature spec that plan pointed to)
 
+## Status (added September 2026): built, tested on a disposable branch, PR open
+
+Migrations 0033–0037 plus the `app.jsx` changes described below have been implemented and are live in [PR #1 — "Team version: deal assignment, RLS visibility restriction, Manager Overview"](https://github.com/SDHux/DealRoom/pull/1), on branch `team-version-deal-assignment`. Everything was tested against a disposable Supabase branch (`test-migrations-0033-0037`, project ref `laxyriktcldjrmqrtent`) — never against production — as owner, admin, and member accounts, before opening the PR. A CSS scoping bug that crashed the Manager Overview screen (React error #31: a `CSS` constant was locally scoped to `DealRoom`, invisible to the sibling `ManagerOverviewScreen`, so it resolved to the browser's global `window.CSS` instead) was found during that testing and fixed in the same PR.
+
+Open questions below are now resolved:
+
+- Billing management stays owner-only (not extended to `admin`) — confirmed by Mark.
+- Admin-promotes-member-to-admin stays owner-only — confirmed by Mark (conservative default, unchanged).
+- Reassignment is logged (migration 0034, `deal_assignment_history`, owner/admin-only read) — confirmed by Mark.
+
+One item still needs manual verification before customers see this: migration 0036 includes a `storage.objects` policy for the `deal-documents` bucket, extending the same assigned-to-only visibility rule to uploaded deal documents. Supabase's database branching does not clone storage bucket policies, so this specific policy could not be exercised end-to-end on the test branch (the branch had zero storage policies to test against — a platform limitation, not a bug in the change itself). The SQL matches the same pattern as every other policy in this PR, but Mark plans to manually test it (upload a document as one rep, confirm a different non-assigned member cannot access it) as part of his own pre-launch QA, after the migration runs against production and before any real customer sees the feature.
+
+**Not yet done:** merging the PR, running migrations 0033–0037 against production (`hjumgvnuqvmxdusldeba`), and deploying the updated `app.jsx`. All three are deliberately held until Mark reviews and approves each step.
+
 ## What Mark asked for (verbatim scope)
 
 Two product offerings going forward: **Single** (today's product, one rep per org, unchanged) and **Team** (multi-rep org with an Admin role). The Team tier's defining difference:
@@ -75,11 +89,9 @@ No client change needed for the restriction itself — RLS does the filtering se
 
 Most of the underlying mechanism already exists and needs no new build:
 
-- **Billing management** — already Admin/Owner-only in effect: `create-checkout-session.mts` and `create-portal-session.mts` already require the caller be `role = 'owner'` in `organization_members` (see the 403 check in both functions). **Decision needed from Mark:** should `admin` (not just `owner`) also be allowed to manage billing? Today only `owner` can. If yes, that's a one-line change in both functions (`roles[0].role !== "owner"` → `!['owner','admin'].includes(roles[0].role)`).
+- **Billing management** — already Admin/Owner-only in effect: `create-checkout-session.mts` and `create-portal-session.mts` already require the caller be `role = 'owner'` in `organization_members` (see the 403 check in both functions). **Resolved:** billing stays `owner`-only, not extended to `admin` — confirmed by Mark.
 - **Create users** — already built: the Team tab's invite flow (`org_invitations`, migration `0010`) lets `owner` or `admin` invite by email with a role.
-- **Establish roles and permissions** — partially already built: `admin` can invite/manage `member` rows; only `owner` can create/manage another `admin`. This existing constraint (admin can't mint other admins) is a reasonable default and is left as-is unless Mark wants admins to be able to promote members to admin too — flagging it as a call, not silently changing it.
-
-**Net new build here:** essentially nothing beyond confirming the billing-permission question above. The gap Mark is describing ("Admin manages billing, creates users, establishes roles") is mostly already true of the `admin`/`owner` roles today; it just isn't packaged or marketed as a distinct "Team" capability yet, and there's no screen that shows an admin the full picture in one place (that's the Manager Overview, below).
+- **Establish roles and permissions** — partially already built: `admin` can invite/manage `member` rows; only `owner` can create/manage another `admin`. **Resolved:** this stays as-is — confirmed by Mark.
 
 ## Manager Overview — new screen
 
@@ -104,14 +116,6 @@ This is the piece that actually serves the stated purpose (coaching on how well 
 
 Surface this as a compact per-deal indicator in the rep drill-in view (e.g., "3 of 4 mapping areas complete" per deal, not a single blended "health score"), so a manager and rep can literally look at one deal together and see what's missing. Do **not** roll these into a single number per rep or use them to rank/sort reps — that would start to look like the scored health signal Mark explicitly descoped. Keep it deal-by-deal and descriptive, not aggregated or judged.
 
-## Open questions for Mark (small, but worth a real answer before Claude Code finalizes the UI)
-
-1. Should `admin` be allowed to manage billing (not just `owner`), or keep billing owner-only?
-2. Should `admin` be allowed to promote a `member` to `admin`, or keep that owner-only as today?
-3. When an admin reassigns a deal from one rep to another (`assigned_to` change), should the original rep lose access immediately, and should there be any notice/audit trail of the reassignment, or is a plain silent field update sufficient for now?
-4. Does the Manager Overview need to include the admin/owner's own deals in the rank-stack (i.e., does an owner who also personally works deals show up as a row alongside their reps), or is it reps-only?
-5. For the mapping-completeness indicator: is "4 of 4 areas complete" (stakeholders/MEDDPIC/discovery/tasks) the right set of areas, or does Mark want a different or more granular checklist for what "well mapped" means in a 1:1 conversation?
-
 ## Suggested build order for Claude Code
 
 1. Migration: add `deals.assigned_to`, backfill from `created_by`, set default at insert time going forward.
@@ -121,7 +125,7 @@ Surface this as a compact per-deal indicator in the rep drill-in view (e.g., "3 
 5. Answer the billing/promotion open questions above and wire the one-line permission changes if Mark wants them.
 6. Manual QA: create a test org with 2+ members at different roles, confirm a `member` only sees their own assigned deals, confirm `owner`/`admin` see everything and the Manager Overview numbers match.
 
-*Sources: direct inspection of `supabase/migrations/0002_organizations_and_membership.sql`, `0003_deals.sql`, `0010_org_invitations.sql`, `0015_meddpic_overrides.sql`, `netlify/functions/create-checkout-session.mts`, `netlify/functions/create-portal-session.mts`, and the `DealRoom`/Team tab code in `app.jsx` (this session, September 12, 2026); scope confirmed directly with Mark, including the 1:1-coaching purpose behind the Manager Overview and the explicit decision to descope automated analytics/red-flag signals for this pass.*
+(All six steps above are now done — see Status at the top of this doc.)
 
 ## Guardrails against regressing the Single-tier experience
 
@@ -131,12 +135,9 @@ Mark's explicit concern: he doesn't want to run one shared backend if it means Q
 
 1. **RLS is the enforcement boundary, and it's structurally safe for solo orgs.** The `assigned_to` restriction in this spec only restricts a `member`-role user. A one-person org's sole user is always `owner` (0002's one-owner-per-org constraint), and `current_org_role(org_id) in ('owner','admin')` always evaluates true for an owner. This isn't "we tested it and it seemed fine" — it's mathematically impossible for a solo org's own visibility to change under this policy. Any future edit to this policy should be checked against this invariant explicitly (does a 1-member org still resolve to `owner`-sees-everything?) rather than spot-tested.
 
-2. **Gate new UI by role/teammate-count, not by hiding it with CSS.** The Manager Overview tab and any "reassign this deal" control should be gated behind the same kind of `current_org_role(orgId) in ('owner','admin')` check the Billing tab already uses, ideally combined with "this org has more than one member" — so a solo account never mounts the new components at all. Zero rendering means zero blast radius from any bug in the new screen for every existing customer today.
+2. **Gate new UI by role/teammate-count, not by hiding it with CSS.** The Manager Overview tab and any "reassign this deal" control should be gated behind the same kind of `current_org_role(orgId) in ('owner','admin')` check the Billing tab already uses, ideally combined with "this org has more than one member" — so a solo account never mounts the new components at all. Zero rendering means zero blast radius from any bug in the new screen for every existing customer today. (Confirmed built this way — see Status.)
 
-3. **Test schema/RLS changes against a disposable copy before production.** Before running the `assigned_to` migration and the `deals_select` policy swap against the live database:
-   - Confirm the current Supabase plan tier (still an open item from the basecamp plan — check the dashboard). Paid tiers support database branching: a disposable copy of the schema to run the migration and new RLS policy against seeded multi-role test data first.
-   - If the current tier doesn't support branching, fall back to a second, throwaway Supabase project seeded from a schema dump, used only to test this migration, then discarded.
-   - Either way, seed a test org with 3+ members at different roles (owner, admin, two members with different assigned deals) and confirm each role sees exactly what it should before the migration touches production.
+3. **Test schema/RLS changes against a disposable copy before production.** (Done — see Status: tested on Supabase branch `test-migrations-0033-0037`.)
 
 4. **Use Netlify deploy previews for the app-layer changes.** Already available with no extra setup — click through the Manager Overview and the tightened visibility behavior on a preview URL before merging to `main`.
 
@@ -144,6 +145,4 @@ Mark's explicit concern: he doesn't want to run one shared backend if it means Q
 
 6. **Keep the rollback ready, not just the forward migration.** Document the exact `drop policy` / recreate-old-policy SQL for the current org-wide `deals_select` policy alongside the new migration, so if anything behaves unexpectedly in production after the swap, there's a known-good, fast revert rather than a scramble.
 
-## Readiness to hand this to Claude Code
-
-The spec above, plus these guardrails, is enough to start building. The genuinely open items (admin billing permission, admin-promotes-to-admin, reassignment audit trail, whether owner/admin show in the rank-stack, exact mapping-completeness checklist, and confirming the Supabase plan tier for the staging approach) don't need to block a start — Claude Code should default to the more conservative option on each (billing stays owner-only, promotion stays owner-only, log reassignments, exclude owner/admin from the rank-stack unless they're also a working rep) and flag each default explicitly rather than silently deciding, so Mark can correct any of them on review rather than before work begins.
+*Sources: direct inspection of `supabase/migrations/0002_organizations_and_membership.sql`, `0003_deals.sql`, `0010_org_invitations.sql`, `0015_meddpic_overrides.sql`, `netlify/functions/create-checkout-session.mts`, `netlify/functions/create-portal-session.mts`, and the `DealRoom`/Team tab code in `app.jsx` (September 12, 2026 session); scope confirmed directly with Mark, including the 1:1-coaching purpose behind the Manager Overview, the decision to keep one shared backend with structural guardrails rather than forking, and the explicit decision to descope automated analytics/red-flag signals for this pass; build, branch-testing, and PR status confirmed directly with Mark and Claude Code (September 12, 2026, follow-up session), including the billing/promotion decisions and the storage-policy manual QA plan.*
