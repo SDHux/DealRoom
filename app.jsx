@@ -2473,6 +2473,13 @@ function DealRoom({prospectShareSlug}) {
     if(error){flash("Couldn't switch view");return;}
     setIsManager(next);
     if(!next){setShowManagerOverview(false);setManagerViewRep(null);}
+    // Found live during QA: the main deals fetch (org-load effect) doesn't depend on
+    // isManager at all, so without this, an Admin's own already-loaded (and, pre-toggle,
+    // RLS-restricted-to-nothing-of-their-own) deals array silently kept showing stale/empty
+    // results after flipping is_manager, since deals_select genuinely returns more rows now
+    // but nothing re-ran the query to pick that up. refreshKey is this app's existing
+    // "force the org-load effect to rerun" mechanism (see createDeal/importDeals).
+    setRefreshKey(k=>k+1);
   };
 
   // One row = one deal, per Mark's explicit scope call: bulk-onboarding an existing
