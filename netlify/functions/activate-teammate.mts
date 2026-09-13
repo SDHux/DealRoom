@@ -84,9 +84,15 @@ export default async (req: Request, context: Context) => {
     return json({ error: "Couldn't finish activating your account -- please try again or ask your Admin to resend a code." }, 500);
   }
   const link = await linkRes.json();
-  const tokenHash: string | undefined = link?.properties?.hashed_token;
+  // hashed_token lives at the top level of the raw REST response, not nested under a
+  // "properties" object -- that nesting is a supabase-js client-SDK wrapper shape; this
+  // function calls the bare /auth/v1/admin/generate_link endpoint directly via fetch, which
+  // returns hashed_token/action_link/email_otp alongside the user fields, unwrapped. Found
+  // live during QA: the first version of this line assumed the SDK's shape and always
+  // returned undefined against the real endpoint response.
+  const tokenHash: string | undefined = link?.hashed_token;
   if (!tokenHash) {
-    console.error("activate-teammate: generate_link response had no properties.hashed_token", JSON.stringify(link));
+    console.error("activate-teammate: generate_link response had no hashed_token", JSON.stringify(link));
     return json({ error: "Couldn't finish activating your account -- please try again or ask your Admin to resend a code." }, 500);
   }
 
