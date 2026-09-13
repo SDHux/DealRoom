@@ -1266,15 +1266,25 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
           ))}
 
           <div style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",margin:"20px 0 10px"}}>Invite a teammate</div>
-          <div style={{display:"flex",gap:8,marginBottom:8}}>
-            <input placeholder="teammate@company.com" value={inviteEmail} onChange={e=>setInviteEmail(e.target.value)} style={inp}/>
-            <select value={inviteRole} onChange={e=>setInviteRole(e.target.value)} style={{...inp,width:110}}>
-              {myRole==="owner"&&<option value="admin">admin</option>}
-              <option value="member">member</option>
-            </select>
-            <button onClick={sendInvite} style={{padding:"9px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>Invite</button>
-          </div>
-          <div style={{fontSize:11,color:P.textMute,lineHeight:1.6,marginBottom:16}}>Share this app's sign-up link with them directly -- once they sign up with this exact email, they'll join your team automatically instead of creating a new organization.</div>
+          {/* TEMPORARY LOCKDOWN: Team tier has open bugs (member profile access, an easy-to-
+              trigger-by-accident reassign control, a manager-view navigation dead end) still
+              being ironed out. Blocks a solo (1-member) org from ever sending its first
+              invite -- the org that's already multi-member (used for iterating on these bugs)
+              is deliberately left working, everyone else can't reach this at all. Remove this
+              gate once the open issues are resolved. */}
+          {members.length===1?
+            <div style={{fontSize:12,color:P.textSec,lineHeight:1.6,marginBottom:16,padding:"10px 12px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:8}}>Team invites are temporarily unavailable while we finish testing the Team features. Check back soon.</div>
+          :<>
+            <div style={{display:"flex",gap:8,marginBottom:8}}>
+              <input placeholder="teammate@company.com" value={inviteEmail} onChange={e=>setInviteEmail(e.target.value)} style={inp}/>
+              <select value={inviteRole} onChange={e=>setInviteRole(e.target.value)} style={{...inp,width:110}}>
+                {myRole==="owner"&&<option value="admin">admin</option>}
+                <option value="member">member</option>
+              </select>
+              <button onClick={sendInvite} style={{padding:"9px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>Invite</button>
+            </div>
+            <div style={{fontSize:11,color:P.textMute,lineHeight:1.6,marginBottom:16}}>Share this app's sign-up link with them directly -- once they sign up with this exact email, they'll join your team automatically instead of creating a new organization.</div>
+          </>}
 
           {invites.length>0&&<>
             <div style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>Pending invites</div>
