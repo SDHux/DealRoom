@@ -54,6 +54,7 @@ export default async (req: Request, context: Context) => {
     body: JSON.stringify({ p_email: email, p_code: code }),
   });
   if (!verifyRes.ok) {
+    console.error("activate-teammate: verify_activation_code REST call failed", verifyRes.status, await verifyRes.text());
     return json({ error: "Couldn't verify that code -- please try again." }, 500);
   }
   const result = await verifyRes.json();
@@ -73,6 +74,7 @@ export default async (req: Request, context: Context) => {
     body: JSON.stringify({ type: "recovery", email }),
   });
   if (!linkRes.ok) {
+    console.error("activate-teammate: admin/generate_link failed", linkRes.status, await linkRes.text());
     return json({ error: "Couldn't finish activating your account -- please try again or ask your Admin to resend a code." }, 500);
   }
   const link = await linkRes.json();
