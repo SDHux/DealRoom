@@ -63,6 +63,11 @@ export default async (req: Request, context: Context) => {
         if (!subRes.ok) console.error("stripe-webhook: subscription fetch body:", await subRes.text());
         const sub = subRes.ok ? await subRes.json() : null;
         const orgId = session.client_reference_id;
+        // Team checkout (create-team-checkout-session.mts) stamps plan_tier onto both the
+        // Checkout Session and the Subscription's own metadata; Solo checkout sets neither,
+        // so planTier is undefined there and this PATCH just omits the field, same as before
+        // this rework.
+        const planTier: string | undefined = session.metadata?.plan_tier || sub?.metadata?.plan_tier;
         if (orgId && sub) {
           const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/organizations?id=eq.${orgId}`, {
             method: "PATCH",
@@ -71,6 +76,7 @@ export default async (req: Request, context: Context) => {
               stripe_subscription_id: sub.id,
               subscription_status: mapStripeStatus(sub.status),
               current_period_end: new Date(currentPeriodEndOf(sub) * 1000).toISOString(),
+              ...(planTier ? { plan_tier: planTier } : {}),
             }),
           });
           console.log("stripe-webhook: organizations PATCH ok=", patchRes.ok, "status=", patchRes.status);

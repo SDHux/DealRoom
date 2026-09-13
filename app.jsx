@@ -1163,8 +1163,15 @@ const NameYourOrg = ({onDone}) => {
   </div>);
 };
 
-const SettingsModal = ({orgId,myUserId,myRole,isAdmin,onClose}) => {
-  const [tab,setTab]=useState(isAdmin?"team":"profile");
+const SettingsModal = ({orgId,myUserId,myRole,isAdmin,isTeamOrg,onClose}) => {
+  // Team Admin/Manager Rework: on a team_5/10/15 org, Team and Billing move to the new
+  // full-page AdminPortalScreen (matching team-admin-manager-mockup.html) -- this modal
+  // stops offering them here so there's no lingering second path to the same controls.
+  // General (org name/logo/stage labels) has no mockup-specified replacement yet, so it
+  // stays reachable from here for every org, Team included.
+  const showTeamTab=isAdmin&&!isTeamOrg;
+  const showBillingTab=isAdmin&&!isTeamOrg;
+  const [tab,setTab]=useState(showTeamTab?"team":isAdmin?"general":"profile");
   const [members,setMembers]=useState([]);
   const [invites,setInvites]=useState([]);
   const [org,setOrg]=useState(null);
@@ -1223,8 +1230,13 @@ const SettingsModal = ({orgId,myUserId,myRole,isAdmin,onClose}) => {
 
   const openDeactivate=async member=>{
     setDeactivateTarget(member);setDeactivateSuccessor("");setDeactivateDealCount(null);
-    const {count}=await sb.from("deals").select("id",{count:"exact",head:true}).eq("org_id",orgId).eq("assigned_to",member.user_id);
-    setDeactivateDealCount(count||0);
+    // Count-only RPC (0045), not a direct deals query -- deals_select RLS (0041) is
+    // current_org_is_manager OR assigned_to=self OR solo, none of which a real Admin
+    // (is_manager false) satisfies for a teammate's deals, so a raw head-count query
+    // silently returned 0 here regardless of how many bivys the target actually held.
+    const {data:counts}=await sb.rpc("admin_deal_counts_by_user",{p_org_id:orgId});
+    const row=(counts||[]).find(c=>c.user_id===member.user_id);
+    setDeactivateDealCount(row?Number(row.deal_count):0);
   };
   const confirmDeactivate=async()=>{
     if(deactivateDealCount>0&&!deactivateSuccessor)return;
@@ -1376,7 +1388,7 @@ const SettingsModal = ({orgId,myUserId,myRole,isAdmin,onClose}) => {
             sees only the My Profile tab, matching "Rep's own settings stay scoped to
             profile only" and "Manager... cannot deactivate an account, change anyone's
             role, or see billing in any form." */}
-        {[...(isAdmin?[["team","Team"],["general","General"]]:[]),["profile","My Profile"],...(isAdmin?[["billing","Billing"]]:[])].map(([k,l])=>(
+        {[...(showTeamTab?[["team","Team"]]:[]),...(isAdmin?[["general","General"]]:[]),["profile","My Profile"],...(showBillingTab?[["billing","Billing"]]:[])].map(([k,l])=>(
           <button key={k} onClick={()=>setTab(k)} style={{padding:"8px 14px",background:"none",border:"none",borderBottom:`2px solid ${tab===k?P.accent:"transparent"}`,color:tab===k?P.accent:P.textSec,fontSize:13,fontWeight:tab===k?700:400,cursor:"pointer"}}>{l}</button>
         ))}
       </div>
@@ -1893,81 +1905,523 @@ const TaskModal = ({task,phases,onSave,onDelete,onClose,calendlyAvailable,itemLa
   </div>);
 };
 
-// Manager Overview -- new screen from TEAM-VERSION-ADMIN-MANAGER-SPEC.md. Rendered only
-// for owner/admin, in an org with more than one member (see the gate on the button that
-// opens this, in DealRoom's sidebar). Built to sit next to a rep during a 1:1: a plain
-// data rollup -- active sales-cycle counts, per-stage breakdown, rank-stacked by pipeline
-// dollar value -- with explicitly NO automated analytics/red-flag scoring (Mark's own
-// descope for this pass). `deals` is whatever the caller already has loaded for owner/
-// admin -- org-wide under the tightened RLS (0035) -- so this needs no query of its own
-// beyond the org roster.
-const ManagerOverviewScreen = ({members,deals,onSelectRep,onClose}) => {
-  // Grouped once up front (not re-filtered per member) -- O(deals) instead of
-  // O(members × deals) below.
+// ============ Team Admin/Manager Rework -- visual layer ============
+// team-admin-manager-mockup.html is the Mark-approved visual source of truth (see
+// TEAM-ADMIN-MANAGER-REWORK-SPEC.md) -- these components match its structure and color
+// tokens exactly, wired to real Supabase data/RPCs instead of the mockup's static arrays.
+// Only rendered for an org actually on a team_5/10/15 plan_tier (isTeamOrg in DealRoom) --
+// a solo org's owner also carries is_admin/is_manager true (0040's solo-safety fix) and
+// must never be routed here.
+const TP = {
+  bg:"#fbfaf8", surface:"#ffffff", surface2:"#f5f3ee",
+  border:"#e9e5db", borderStrong:"#d3ccb9",
+  text:"#181613", textMute:"#6b6355", textFaint:"#a89d89",
+  accent:"#c15a3c", accentStrong:"#9c4530", accentSoft:"#f7e2d3",
+  ink:"#171512", red:"#a8564f",
+  stage:{Discovery:"#93a6c4",Evaluation:"#8b93b8",Trial:"#a288ab",Proposal:"#b98a94",Negotiation:"#c39a68","Closed Won":"#5f8f74","Closed Lost":"#a89d8c"},
+};
+const TIER_SEATS={team_5:5,team_10:10,team_15:15};
+const TIER_PRICE={team_5:449,team_10:690,team_15:996};
+const tpFont={fontFamily:"'Archivo',-apple-system,BlinkMacSystemFont,sans-serif"};
+const tpMono={fontFamily:"'IBM Plex Mono',ui-monospace,monospace"};
+const tpFmt=n=>"$"+Math.round(n||0).toLocaleString("en-US");
+const TPFontImport=()=><style>{`@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Mono:wght@500;600&display=swap');`}</style>;
+
+const TPStatTile=({label,value,note,valueColor,borderColor,onClick})=>{
+  const Tag=onClick?"button":"div";
+  return <Tag onClick={onClick} style={{...tpFont,textAlign:"left",background:TP.surface,border:`1px solid ${TP.border}`,borderTop:`3px solid ${borderColor||TP.text}`,borderRadius:14,padding:"18px 20px",cursor:onClick?"pointer":"default",width:"100%"}}>
+    <div style={{fontSize:11.5,textTransform:"uppercase",letterSpacing:"0.07em",color:TP.textFaint,fontWeight:600}}>{label}</div>
+    <div style={{...tpMono,fontSize:26,fontWeight:600,marginTop:8,letterSpacing:"-0.01em",color:valueColor||TP.text}}>{value}</div>
+    {note&&<div style={{fontSize:12.5,color:TP.textMute,marginTop:4}}>{note}</div>}
+  </Tag>;
+};
+
+const TPTopbar=({roleLabel,impersonating,onToggleImpersonate,showImpersonateBtn,avatarInitials,onSettings})=>(
+  <div style={{display:"flex",alignItems:"center",gap:16,padding:"14px 20px",marginBottom:22,flexWrap:"wrap",background:TP.ink,borderRadius:14}}>
+    <div style={{display:"flex",alignItems:"center",gap:9,...tpFont,fontWeight:800,fontSize:19.5,letterSpacing:"-0.01em",color:"#fff"}}>
+      <div style={{width:26,height:26,borderRadius:7,background:`linear-gradient(155deg, ${TP.accent}, ${TP.accentStrong})`,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><div style={{width:15,height:15}}>{LOGO_MARK}</div></div>
+      myBivy
+    </div>
+    <div style={{display:"flex",alignItems:"center",gap:12,marginLeft:"auto",flexWrap:"wrap"}}>
+      <span style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:11.5,fontWeight:700,padding:"5px 11px",borderRadius:100,textTransform:"uppercase",letterSpacing:"0.04em",background:impersonating?TP.accentSoft:"rgba(255,255,255,0.08)",border:impersonating?`1px dashed ${TP.accent}`:"1px solid rgba(255,255,255,0.15)",color:impersonating?TP.accentStrong:"rgba(255,255,255,0.75)"}}>{roleLabel}</span>
+      {showImpersonateBtn&&<button onClick={onToggleImpersonate} style={{border:`1px solid ${impersonating?TP.accent:"rgba(255,255,255,0.25)"}`,background:impersonating?TP.accent:"rgba(255,255,255,0.08)",color:"#fff",borderRadius:100,fontSize:12.5,fontWeight:600,padding:"6px 13px",cursor:"pointer"}}>{impersonating?"Back to Admin":"View as Manager"}</button>}
+      {onSettings&&<button onClick={onSettings} title="Org settings" style={{width:30,height:30,borderRadius:"50%",background:"rgba(255,255,255,0.08)",border:"none",color:"#fff",fontSize:13,cursor:"pointer"}}>⚙</button>}
+      <button onClick={()=>sb.auth.signOut()} title="Sign out" style={{background:"none",border:"none",color:"rgba(255,255,255,0.55)",fontSize:11.5,fontWeight:600,cursor:"pointer"}}>Sign out</button>
+      <div style={{width:30,height:30,borderRadius:"50%",background:TP.accentSoft,color:TP.accentStrong,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11.5,fontWeight:700,border:`1px solid ${TP.borderStrong}`,flexShrink:0}}>{avatarInitials}</div>
+    </div>
+  </div>
+);
+
+const TPBtn=({children,onClick,kind,disabled,style})=>{
+  const kinds={
+    primary:{background:TP.accent,color:"#fff",border:`1px solid ${TP.accent}`},
+    ghost:{background:TP.surface,color:TP.text,border:`1px solid ${TP.borderStrong}`},
+    danger:{background:"none",color:TP.red,border:"none",padding:"4px 2px"},
+    text:{background:"none",color:TP.accent,border:"none",padding:"4px 2px"},
+  };
+  return <button onClick={onClick} disabled={disabled} style={{...tpFont,borderRadius:9,fontSize:13,fontWeight:600,padding:"9px 15px",cursor:disabled?"not-allowed":"pointer",display:"inline-flex",alignItems:"center",gap:7,whiteSpace:"nowrap",opacity:disabled?0.55:1,...kinds[kind||"ghost"],...style}}>{children}</button>;
+};
+
+// Reassign, informed (Manager only) -- shows deal name/value/stage while choosing, distinct
+// from Admin's blind bulk RPC used only during deactivation. `deals` is either one deal
+// (single, from a drill-in dealroom line) or a rep's full list (bulk, from a Team Overview
+// row's ⇄ action). Nothing commits until Save -- closes Bug 2's "no silent one-click moves"
+// requirement for this surface too.
+const ReassignModal=({repName,deals,others,onSave,onClose})=>{
+  const [choices,setChoices]=useState({});
+  return <div style={{position:"fixed",inset:0,background:"rgba(20,17,12,0.45)",display:"flex",alignItems:"center",justifyContent:"center",padding:24,zIndex:1200}}>
+    <div style={{...tpFont,background:TP.surface,border:`1px solid ${TP.border}`,borderRadius:18,maxWidth:480,width:"100%",maxHeight:"88vh",overflowY:"auto"}}>
+      <div style={{padding:"22px 24px 14px",borderBottom:`1px solid ${TP.border}`}}>
+        <div style={{fontSize:17,fontWeight:700,color:TP.text}}>Reassign bivy{deals.length>1?"s":""} — {repName}</div>
+        <div style={{fontSize:13,color:TP.textMute,marginTop:6,lineHeight:1.5}}>Choose a new owner. {repName} loses access the moment you save, the new owner gains it.</div>
+      </div>
+      <div style={{padding:"16px 24px"}}>
+        {deals.map(d=>(
+          <div key={d.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,padding:"10px 0",borderBottom:`1px solid ${TP.border}`}}>
+            <div><div style={{fontSize:13.5,fontWeight:600,color:TP.text}}>{d.company}</div><div style={{fontSize:12,color:TP.textMute}}>{d.value} · {d.stage}</div></div>
+            <select value={choices[d.id]||""} onChange={e=>setChoices(c=>({...c,[d.id]:e.target.value}))} style={{width:170,border:`1px solid ${TP.border}`,borderRadius:8,padding:"6px 8px",fontSize:12.5,background:TP.surface,color:TP.text}}>
+              <option value="">Keep with {repName}</option>
+              {others.map(o=><option key={o.user_id} value={o.user_id}>Move to {o.fullName||o.email}</option>)}
+            </select>
+          </div>
+        ))}
+      </div>
+      <div style={{display:"flex",justifyContent:"space-between",gap:12,padding:"16px 24px",borderTop:`1px solid ${TP.border}`}}>
+        <TPBtn kind="ghost" onClick={onClose}>Cancel</TPBtn>
+        <TPBtn kind="primary" onClick={()=>onSave(Object.entries(choices).filter(([,v])=>v))}>Save changes</TPBtn>
+      </div>
+    </div>
+  </div>;
+};
+
+// Team Overview (Manager) + Rep drill-in. Rendered whenever isManager is true on a Team
+// org -- covers both a genuine Manager teammate and an Admin who's toggled View as
+// Manager on (a real permission grant, see toggleViewAsManager; this screen never knows
+// or cares which case it is beyond `impersonating`, which only controls the exit banner).
+const TeamOverviewScreen=({members,deals,onReassign,impersonating,onToggleImpersonate,avatarInitials})=>{
+  const [drillId,setDrillId]=useState(null);
+  const [reassignFor,setReassignFor]=useState(null); // null | {repId,repName,deals:[...]}
+
   const dealsByRep=deals.reduce((acc,d)=>{(acc[d.assignedTo]=acc[d.assignedTo]||[]).push(d);return acc;},{});
-  // DEFAULT (flagged per spec open question 4): owner/admin are excluded from the
-  // rank-stack unless they're also a working rep with deals assigned to them. Mark can
-  // ask for owner/admin to always show, or never show, on review.
+  const nameFor=m=>m.profile?.full_name||m.profile?.email||"Unnamed";
   const rows=members
     .map(m=>{
       const repDeals=dealsByRep[m.user_id]||[];
       const activeDeals=repDeals.filter(d=>!CLOSED_DEAL_STAGES.includes(d.stage));
-      // Grouped by currency, not blindly summed into one number -- deals carry their own
-      // currency (deals.currency), and formatting a cross-currency sum as a single "$"
-      // figure would silently misstate pipeline value for any org with mixed-currency
-      // deals. Currently unreachable in practice (nothing in the app sets currency away
-      // from the DB default "USD" yet), but cheap to get right now rather than later.
-      const valueByCurrency=activeDeals.reduce((acc,d)=>{acc[d.currency]=(acc[d.currency]||0)+(d.valueAmount||0);return acc;},{});
-      // Sort key only -- ranking across currencies with no FX rate anywhere in this
-      // codebase is a known simplification (raw sum, not a real cross-currency total);
-      // building actual currency conversion is out of scope here.
-      const pipelineValue=Object.values(valueByCurrency).reduce((s,v)=>s+v,0);
-      const stageCounts=DEAL_STAGES.filter(s=>!CLOSED_DEAL_STAGES.includes(s))
-        .map(s=>[s,activeDeals.filter(d=>d.stage===s).length]).filter(([,c])=>c>0);
-      return {...m,repDeals,activeDeals,pipelineValue,valueByCurrency,stageCounts};
+      const pipelineValue=activeDeals.reduce((s,d)=>s+(d.valueAmount||0),0);
+      const segCounts={};activeDeals.forEach(d=>{segCounts[d.stage]=(segCounts[d.stage]||0)+1;});
+      const segments=DEAL_STAGES.filter(s=>segCounts[s]).map(s=>({stage:s,count:segCounts[s]}));
+      return {...m,repDeals,activeDeals,pipelineValue,segments};
     })
     .filter(m=>m.role==="member"||m.repDeals.length>0)
     .sort((a,b)=>b.pipelineValue-a.pipelineValue);
 
-  const nameFor=m=>m.profile?.full_name||m.profile?.email||"Unnamed";
+  const totalPipeline=rows.reduce((s,r)=>s+r.pipelineValue,0);
+  const totalActive=rows.reduce((s,r)=>s+r.activeDeals.length,0);
+  const maxPipe=Math.max(...rows.map(r=>r.pipelineValue),1);
 
-  return <div style={{fontFamily:"'Inter','Segoe UI',sans-serif",background:P.bg,minHeight:"100vh",color:P.text}}>
-    <style>{CSS}</style>
-    <div style={{background:P.ink,padding:"18px 32px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
-      <div style={{display:"flex",alignItems:"center",gap:12}}>
-        <div style={{width:36,height:36,borderRadius:9,background:"rgba(255,255,255,0.08)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><div style={{width:20,height:20}}>{LOGO_MARK}</div></div>
-        <div><div className="headline" style={{fontSize:19,color:"#fff",lineHeight:1}}>Team Overview</div><div className="mono" style={{fontSize:9.5,letterSpacing:"0.08em",textTransform:"uppercase",color:"rgba(255,255,255,0.4)",marginTop:3}}>Manager view</div></div>
-      </div>
-      <button onClick={onClose} style={{padding:"9px 16px",background:"rgba(255,255,255,0.08)",border:"none",borderRadius:7,color:"#fff",fontSize:12.5,fontWeight:600,cursor:"pointer"}}>← Back to My Deals</button>
-    </div>
-    <div style={{maxWidth:960,margin:"0 auto",padding:"32px 24px"}}>
-      <div style={{fontSize:13,color:P.textSec,marginBottom:6,lineHeight:1.6,maxWidth:680}}>Active sales cycles, pipeline value, and stage mix per rep — ranked by pipeline dollar value. Click a rep to review their bivies with them. No automated scoring here by design — just what's actually in each deal room.</div>
-      <div style={{fontSize:11.5,color:P.textMute,marginBottom:22,lineHeight:1.6,maxWidth:680}}>Note: every deal defaults to the "Discovery" stage today and nothing in the app yet advances it, so the stage breakdown below will look flat until stage-changing is built — flagging this now rather than leaving it a silent surprise.</div>
-      {rows.length===0?<div style={{padding:40,textAlign:"center",color:P.textMute,fontSize:13}}>No reps with assigned deals yet.</div>
-      :<div style={{display:"grid",gap:10}}>
-        {rows.map((m,i)=>(
-          <div key={m.user_id} onClick={()=>onSelectRep(m.user_id,nameFor(m))} style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:12,padding:"18px 22px",display:"flex",alignItems:"center",gap:18,cursor:"pointer",boxShadow:"0 1px 2px rgba(27,31,35,0.05)"}}>
-            <div className="mono" style={{width:22,fontSize:13,color:P.textMute,fontWeight:700,flexShrink:0}}>#{i+1}</div>
-            {m.profile?.avatar_url?
-              <img src={m.profile.avatar_url} alt="" style={{width:40,height:40,borderRadius:"50%",objectFit:"cover",flexShrink:0}}/>
-            :<div className="headline" style={{width:40,height:40,borderRadius:"50%",background:P.accentLight,color:P.accentMid,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>{initialsOf(nameFor(m))}</div>}
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}>
-                <span style={{fontSize:15,fontWeight:700,color:P.text}}>{nameFor(m)}</span>
-                {m.role!=="member"&&<Badge label={m.role} color={P.textSec} bg={P.bg} border={P.border} small/>}
+  if(drillId){
+    const rep=rows.find(r=>r.user_id===drillId);
+    if(!rep)return null;
+    const sorted=[...rep.repDeals].sort((a,b)=>DEAL_STAGES.indexOf(a.stage)-DEAL_STAGES.indexOf(b.stage));
+    const others=members.filter(m=>m.user_id!==rep.user_id);
+    return <div style={{...tpFont,background:TP.bg,minHeight:"100vh",padding:"0 20px 64px"}}>
+      <TPFontImport/>
+      <div style={{maxWidth:1100,margin:"0 auto"}}>
+        <TPTopbar roleLabel={impersonating?"Manager":"Manager"} impersonating={impersonating} avatarInitials={avatarInitials}/>
+        {impersonating&&<div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 16px",marginBottom:20,borderRadius:10,background:TP.accentSoft,border:`1px dashed ${TP.accent}`,color:TP.accentStrong,fontSize:13.5,fontWeight:600}}>Viewing as Manager. Nothing you do here changes your own Admin permissions.<button onClick={onToggleImpersonate} style={{marginLeft:"auto",background:TP.surface,border:`1px solid ${TP.accent}`,color:TP.accentStrong,borderRadius:8,fontSize:12.5,fontWeight:700,padding:"6px 12px",cursor:"pointer"}}>Exit to Admin Portal</button></div>}
+        <button onClick={()=>setDrillId(null)} style={{...tpFont,display:"inline-flex",alignItems:"center",gap:7,background:TP.surface2,border:`1px solid ${TP.border}`,padding:"8px 14px",borderRadius:100,fontSize:13.5,fontWeight:600,color:TP.text,cursor:"pointer",marginBottom:18}}>← Back to Team Overview</button>
+        <div style={{display:"flex",alignItems:"center",gap:16,marginBottom:22,flexWrap:"wrap"}}>
+          <div style={{width:48,height:48,borderRadius:"50%",background:TP.accent,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:700}}>{initialsOf(nameFor(rep))}</div>
+          <div><div style={{fontSize:21.5,fontWeight:700,color:TP.text}}>{nameFor(rep)}'s bivys</div><div style={{fontSize:13.5,color:TP.textMute,marginTop:3}}>{rep.activeDeals.length} active · {tpFmt(rep.pipelineValue)} in open pipeline</div></div>
+        </div>
+        <div style={{background:TP.surface,border:`1px solid ${TP.border}`,borderRadius:16,overflow:"hidden"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"16px 20px",borderBottom:`1px solid ${TP.border}`}}><div style={{fontSize:16,fontWeight:700,color:TP.text}}>Bivys</div><div style={{fontSize:12,color:TP.textFaint}}>{rep.repDeals.length} total, sorted by stage</div></div>
+          {sorted.map(d=>{
+            const mc=mappingCompleteness(d);
+            const areaLabels=[["stakeholders","Stakeholders"],["meddpic","MEDDPIC"],["discovery","Discovery / exec summary"],["tasks","Tasks planned"]];
+            const missing=areaLabels.filter(([k])=>!mc.areas[k]).map(([,l])=>l);
+            return <div key={d.id} style={{display:"grid",gridTemplateColumns:"1.5fr 110px 130px 1.1fr",gap:18,alignItems:"center",padding:"17px 20px",borderBottom:`1px solid ${TP.border}`}}>
+              <div><div style={{fontSize:14,fontWeight:600,color:TP.text}}>{d.company}</div><button onClick={()=>setReassignFor({repId:rep.user_id,repName:nameFor(rep),deals:[d]})} style={{marginTop:4,background:"none",border:"none",color:TP.accent,fontWeight:600,fontSize:12.5,cursor:"pointer",padding:0}}>⇄ Reassign</button></div>
+              <div><span style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:11.5,fontWeight:600,padding:"4px 10px",borderRadius:100,background:TP.surface2,border:`1px solid ${TP.border}`,whiteSpace:"nowrap"}}><span style={{width:7,height:7,borderRadius:"50%",background:TP.stage[d.stage]||TP.textFaint}}/>{d.stage}</span></div>
+              <div style={{...tpMono,fontWeight:600,fontSize:14,textAlign:"right"}}>{d.value}</div>
+              <div>
+                <div style={{display:"flex",alignItems:"center",gap:9}}>
+                  <div style={{display:"flex",gap:4}}>{[0,1,2,3].map(i=>{const filled=Object.values(mc.areas)[i];return <span key={i} style={{width:9,height:9,borderRadius:2,border:`1.4px solid ${TP.accent}`,background:filled?TP.accent:"transparent",borderColor:filled?TP.accent:TP.borderStrong}}/>;})}</div>
+                  <div style={{...tpMono,fontSize:12,color:TP.textMute}}>{mc.completeCount} of 4 mapped</div>
+                </div>
+                <div style={{fontSize:11,color:TP.textFaint,marginTop:4}}>{missing.length?<><b style={{color:TP.textMute}}>Missing:</b> {missing.join(", ")}</>:"All four mapping areas complete"}</div>
               </div>
-              <div style={{fontSize:12,color:P.textSec}}>{m.activeDeals.length} active sales cycle{m.activeDeals.length===1?"":"s"}</div>
-              {m.stageCounts.length>0&&<div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>
-                {m.stageCounts.map(([s,c])=><span key={s} style={{fontSize:10.5,padding:"2px 8px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:10,color:P.textSec}}>{s} · {c}</span>)}
-              </div>}
+            </div>;
+          })}
+        </div>
+      </div>
+      {reassignFor&&<ReassignModal repName={reassignFor.repName} deals={reassignFor.deals} others={others.map(o=>({user_id:o.user_id,fullName:o.profile?.full_name,email:o.profile?.email}))}
+        onSave={changes=>{changes.forEach(([dealId,toId])=>onReassign(dealId,toId));setReassignFor(null);}} onClose={()=>setReassignFor(null)}/>}
+    </div>;
+  }
+
+  return <div style={{...tpFont,background:TP.bg,minHeight:"100vh",padding:"0 20px 64px"}}>
+    <TPFontImport/>
+    <div style={{maxWidth:1100,margin:"0 auto"}}>
+      <TPTopbar roleLabel="Manager" impersonating={impersonating} onToggleImpersonate={onToggleImpersonate} showImpersonateBtn={impersonating} avatarInitials={avatarInitials}/>
+      {impersonating&&<div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 16px",marginBottom:20,borderRadius:10,background:TP.accentSoft,border:`1px dashed ${TP.accent}`,color:TP.accentStrong,fontSize:13.5,fontWeight:600}}>Viewing as Manager. Nothing you do here changes your own Admin permissions.<button onClick={onToggleImpersonate} style={{marginLeft:"auto",background:TP.surface,border:`1px solid ${TP.accent}`,color:TP.accentStrong,borderRadius:8,fontSize:12.5,fontWeight:700,padding:"6px 12px",cursor:"pointer"}}>Exit to Admin Portal</button></div>}
+      <div style={{marginBottom:22}}>
+        <div style={{fontSize:24,fontWeight:700,letterSpacing:"-0.01em",color:TP.text}}>Team Overview</div>
+        <div style={{fontSize:13.5,color:TP.textMute,marginTop:5,maxWidth:640}}>A plain rollup of who's carrying what, stacked by pipeline value. Built to sit next to a rep in a 1:1, not to watch them from afar.</div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:14,marginBottom:26}}>
+        <TPStatTile label="Active pipeline" value={tpFmt(totalPipeline)} note={`Across ${rows.length} reps, ${totalActive} open bivys`} borderColor={TP.text}/>
+        <TPStatTile label="Active bivys" value={totalActive} note="Not yet Closed Won or Lost" borderColor={TP.accent}/>
+        <TPStatTile label="Active reps" value={rows.length} note="Add or remove reps from the Admin Portal" borderColor={TP.stage.Negotiation}/>
+      </div>
+      <div style={{background:TP.surface,border:`1px solid ${TP.border}`,borderRadius:16,overflow:"hidden"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"16px 20px",borderBottom:`1px solid ${TP.border}`}}><div style={{fontSize:16,fontWeight:700,color:TP.text}}>Reps</div><div style={{fontSize:12,color:TP.textFaint}}>Stacked by active pipeline value, highest first</div></div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:12,padding:"12px 20px",borderBottom:`1px solid ${TP.border}`,background:TP.surface2}}>
+          {DEAL_STAGES.map(s=><div key={s} style={{display:"flex",alignItems:"center",gap:6,fontSize:11.5,color:TP.textMute}}><span style={{width:9,height:9,borderRadius:2,background:TP.stage[s]}}/>{s}</div>)}
+        </div>
+        {rows.length===0?<div style={{padding:40,textAlign:"center",color:TP.textMute,fontSize:13}}>No reps with assigned deals yet.</div>:rows.map(r=>{
+          const ad=r.activeDeals.length;
+          return <div key={r.user_id} role="button" tabIndex={0} onClick={()=>setDrillId(r.user_id)} style={{display:"grid",gridTemplateColumns:"1.6fr 90px 1.3fr 1.3fr auto 18px",alignItems:"center",gap:18,padding:"16px 20px",borderBottom:`1px solid ${TP.border}`,cursor:"pointer",background:"none",width:"100%",textAlign:"left"}}>
+            <span style={{display:"flex",alignItems:"center",gap:11,minWidth:0}}>
+              <span style={{width:34,height:34,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,color:"#fff",background:TP.accent}}>{initialsOf(nameFor(r))}</span>
+              <span><div style={{fontWeight:600,fontSize:14.5,color:TP.text}}>{nameFor(r)}</div><div style={{fontSize:12,color:TP.textMute}}>{ad} active bivy{ad===1?"":"s"}</div></span>
+            </span>
+            <span style={{...tpMono,fontSize:13.5,color:TP.textMute}}><b style={{color:TP.text}}>{ad}</b> open</span>
+            <span><div style={{...tpMono,fontWeight:600,fontSize:14,marginBottom:6}}>{tpFmt(r.pipelineValue)}</div><div style={{height:6,background:TP.surface2,borderRadius:100,overflow:"hidden",border:`1px solid ${TP.border}`}}><div style={{height:"100%",width:`${(r.pipelineValue/maxPipe*100).toFixed(1)}%`,background:TP.accent,borderRadius:100}}/></div></span>
+            <span>
+              <div style={{display:"flex",height:16,borderRadius:5,overflow:"hidden",border:`1px solid ${TP.border}`}}>{r.segments.map(s=><span key={s.stage} title={`${s.stage} · ${s.count}`} style={{height:"100%",width:`${(s.count/ad*100).toFixed(1)}%`,background:TP.stage[s.stage]}}/>)}</div>
+              <div style={{fontSize:11,color:TP.textFaint,marginTop:6}}>{r.segments.map(s=>`${s.stage} · ${s.count}`).join("   ")}</div>
+            </span>
+            <button onClick={e=>{e.stopPropagation();setReassignFor({repId:r.user_id,repName:nameFor(r),deals:r.repDeals});}} style={{background:"none",border:"none",color:TP.accent,fontWeight:600,fontSize:12.5,cursor:"pointer",whiteSpace:"nowrap"}}>⇄ Reassign</button>
+            <span style={{color:TP.textFaint,fontSize:16}}>›</span>
+          </div>;
+        })}
+      </div>
+      <div style={{marginTop:16,padding:"16px 18px",border:`1px dashed ${TP.borderStrong}`,borderRadius:12,fontSize:12.5,color:TP.textMute,lineHeight:1.6,background:TP.surface2}}><b style={{color:TP.text}}>What this screen won't do:</b> no scoring, no red flags, no ranking by anything but the numbers shown.</div>
+    </div>
+    {reassignFor&&<ReassignModal repName={reassignFor.repName} deals={reassignFor.deals} others={members.filter(m=>m.user_id!==reassignFor.repId).map(o=>({user_id:o.user_id,fullName:o.profile?.full_name,email:o.profile?.email}))}
+      onSave={changes=>{changes.forEach(([dealId,toId])=>onReassign(dealId,toId));setReassignFor(null);}} onClose={()=>setReassignFor(null)}/>}
+  </div>;
+};
+
+// Admin Portal -- billing, roster, roles. Zero deal content anywhere on this screen, by
+// design (spec: "Admin... Zero visibility into deal names, values, stages, or mapping
+// completeness, anywhere"). Self-contained data fetch/mutations, same pattern and same
+// RPCs as the old SettingsModal's Team+Billing tabs (this is a re-skin, not new logic) --
+// see TEAM-ADMIN-MANAGER-REWORK-SPEC.md's "What's left: the visual layer".
+const AdminPortalScreen=({orgId,myUserId,planTier,subscriptionStatus,currentPeriodEnd,hasStripeSubscription,onToggleImpersonate,onOpenGeneralSettings})=>{
+  const [members,setMembers]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [inviteName,setInviteName]=useState("");
+  const [inviteEmail,setInviteEmail]=useState("");
+  const [inviteIsManager,setInviteIsManager]=useState(false);
+  const [inviteLoading,setInviteLoading]=useState(false);
+  const [inviteResult,setInviteResult]=useState(null);
+  const [inviteError,setInviteError]=useState("");
+  const [resendingId,setResendingId]=useState(null);
+  const [deactivateTarget,setDeactivateTarget]=useState(null);
+  const [deactivateDealCount,setDeactivateDealCount]=useState(null);
+  const [deactivateSuccessor,setDeactivateSuccessor]=useState("");
+  const [deactivateLoading,setDeactivateLoading]=useState(false);
+  const [showBilling,setShowBilling]=useState(false);
+  const [showWizard,setShowWizard]=useState(false);
+  const [showFirstTime,setShowFirstTime]=useState(false);
+  const myUserRow=members.find(m=>m.user_id===myUserId);
+
+  const load=async()=>{
+    setLoading(true);
+    const {data:mem}=await sb.from("organization_members").select("id,user_id,role,status,is_admin,is_manager,created_at").eq("org_id",orgId);
+    const userIds=(mem||[]).map(m=>m.user_id);
+    const {data:profiles}=userIds.length?await sb.from("profiles").select("id,email,full_name").in("id",userIds):{data:[]};
+    const profileById=Object.fromEntries((profiles||[]).map(p=>[p.id,p]));
+    // Count-only RPC (0045), not a direct deals query -- deals_select RLS (0041) is
+    // current_org_is_manager OR assigned_to=self OR solo, none of which a real Admin
+    // (is_manager false) satisfies for a teammate's deals, so a raw select silently
+    // returns zero rows here. This mirrors blind_reassign_all_deals's own "count only,
+    // never content" security model for the exact same reason.
+    const {data:dealCounts}=await sb.rpc("admin_deal_counts_by_user",{p_org_id:orgId});
+    const countByUser={};(dealCounts||[]).forEach(d=>{countByUser[d.user_id]=Number(d.deal_count);});
+    setMembers((mem||[]).map(m=>({...m,email:profileById[m.user_id]?.email,fullName:profileById[m.user_id]?.full_name,dealCount:countByUser[m.user_id]||0})));
+    setLoading(false);
+  };
+  useEffect(()=>{load();},[orgId]);
+  useEffect(()=>{
+    const key=`mybivy_admin_portal_seen_${orgId}`;
+    if(!localStorage.getItem(key)){setShowFirstTime(true);localStorage.setItem(key,"1");}
+  },[orgId]);
+
+  const sendInvite=async(name,email,isManager)=>{
+    const {data:{session}}=await sb.auth.getSession();
+    const res=await fetch("/api/provision-teammate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({orgId,accessToken:session?.access_token,fullName:name,email,isManager})});
+    const data=await res.json();
+    if(!res.ok)throw new Error(data.message||data.error||"Couldn't add teammate");
+    return data;
+  };
+  const submitInvite=async()=>{
+    if(!inviteName.trim()||!inviteEmail.trim())return;
+    setInviteLoading(true);setInviteError("");setInviteResult(null);
+    try{
+      const data=await sendInvite(inviteName.trim(),inviteEmail.trim(),inviteIsManager);
+      setInviteResult(data);setInviteName("");setInviteEmail("");setInviteIsManager(false);load();
+    }catch(e){setInviteError(e.message);}
+    setInviteLoading(false);
+  };
+  const resendCode=async userId=>{
+    setResendingId(userId);
+    const {data,error:err}=await sb.rpc("resend_teammate_code",{p_org_id:orgId,p_user_id:userId});
+    if(!err)setInviteResult({...data,activationUrl:`${window.location.origin}/?activate=${encodeURIComponent(data.email)}`});
+    setResendingId(null);
+  };
+  const changeManagerFlag=async(memberId,makeManager)=>{await sb.from("organization_members").update({is_manager:makeManager}).eq("id",memberId);load();};
+  const openDeactivate=async member=>{
+    setDeactivateTarget(member);setDeactivateSuccessor("");setDeactivateDealCount(member.dealCount);
+  };
+  const confirmDeactivate=async()=>{
+    if(deactivateDealCount>0&&!deactivateSuccessor)return;
+    setDeactivateLoading(true);
+    if(deactivateDealCount>0){
+      const {error:rpcErr}=await sb.rpc("blind_reassign_all_deals",{p_org_id:orgId,p_from_user:deactivateTarget.user_id,p_to_user:deactivateSuccessor});
+      if(rpcErr){setDeactivateLoading(false);return;}
+    }
+    await sb.from("organization_members").update({status:"deactivated"}).eq("id",deactivateTarget.id);
+    setDeactivateLoading(false);setDeactivateTarget(null);load();
+  };
+
+  const activeCount=members.filter(m=>m.status!=="deactivated").length;
+  const seatCap=TIER_SEATS[planTier]||0;
+  const price=TIER_PRICE[planTier];
+  const billingLabel=subscriptionStatus==="active"?"Current":subscriptionStatus==="past_due"?"Past due":subscriptionStatus==="canceled"?"Canceled":"Pending";
+  const billingColor=subscriptionStatus==="active"?TP.stage["Closed Won"]:subscriptionStatus==="past_due"?TP.red:TP.textMute;
+
+  return <div style={{...tpFont,background:TP.bg,minHeight:"100vh",padding:"0 20px 64px"}}>
+    <TPFontImport/>
+    <div style={{maxWidth:1100,margin:"0 auto"}}>
+      <TPTopbar roleLabel="Admin" avatarInitials={initialsOf(myUserRow?.fullName||myUserRow?.email||"")} onSettings={onOpenGeneralSettings} showImpersonateBtn onToggleImpersonate={onToggleImpersonate} impersonating={false}/>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",gap:24,marginBottom:22,flexWrap:"wrap"}}>
+        <div>
+          <div style={{fontSize:24,fontWeight:700,letterSpacing:"-0.01em",color:TP.text}}>Admin Portal</div>
+          <div style={{fontSize:13.5,color:TP.textMute,marginTop:5,maxWidth:640}}>Seats, billing, roles, and who's active. No deal names, values, stages, or mapping progress live here, that's the Manager's view, not the Admin's.</div>
+        </div>
+        <TPBtn kind="primary" onClick={()=>setShowWizard(true)}>🧭 Run team setup</TPBtn>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:14,marginBottom:26,maxWidth:640}}>
+        <TPStatTile label="Plan" value={`Team · ${seatCap}`} note="Billed monthly" borderColor={TP.text}/>
+        <TPStatTile label="Seats" value={<>{activeCount} <span style={{color:TP.textFaint,fontSize:16}}>/ {seatCap}</span></>} note={`${Math.max(0,seatCap-activeCount)} seats available`} borderColor={TP.accent}/>
+        <TPStatTile label="Next invoice" value={price?`$${price}`:"—"} note={currentPeriodEnd?new Date(currentPeriodEnd).toLocaleDateString():"Not yet billed"} borderColor={TP.stage.Negotiation}/>
+        <TPStatTile label="Billing status" value={billingLabel} valueColor={billingColor} note="Manage →" borderColor={TP.stage["Closed Won"]} onClick={()=>setShowBilling(true)}/>
+      </div>
+      <div style={{background:TP.surface,border:`1px solid ${TP.border}`,borderRadius:16,overflow:"hidden",marginBottom:20}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:16,padding:"16px 20px",background:"color-mix(in srgb, "+TP.stage["Closed Won"]+" 16%, white)"}}>
+          <div style={{fontSize:16,fontWeight:700,color:"color-mix(in srgb, "+TP.stage["Closed Won"]+" 70%, black)"}}>Roster</div>
+          <TPBtn kind="ghost" onClick={()=>{setInviteName("");setInviteEmail("");setInviteResult(null);setInviteError("");document.getElementById("tp-invite-anchor")?.scrollIntoView({behavior:"smooth"});}}>+ Add teammate</TPBtn>
+        </div>
+        <div style={{display:"flex",gap:22,flexWrap:"wrap",padding:"14px 20px",background:TP.surface2,borderBottom:`1px solid ${TP.border}`,fontSize:12.5,color:TP.textMute}}>
+          <div><b style={{color:TP.text}}>Admin</b> — billing, roster, roles. Can view as Manager, never sees deal content directly</div>
+          <div><b style={{color:TP.text}}>Manager</b> — every rep's bivys, the Overview, and dealroom reassignment. No billing, no roster</div>
+          <div><b style={{color:TP.text}}>Rep</b> — their own bivys and profile only</div>
+        </div>
+        {loading?<div style={{padding:30,textAlign:"center",color:TP.textMute,fontSize:13}}>Loading…</div>:members.map((m,i)=>{
+          const isMe=m.user_id===myUserId;
+          const isDeactivated=m.status==="deactivated";
+          return <div key={m.id} style={{display:"grid",gridTemplateColumns:"1.7fr 130px 120px 120px 1.2fr",alignItems:"center",gap:14,padding:"14px 20px",borderBottom:`1px solid ${TP.border}`,background:i%2===1?TP.surface2:"transparent",opacity:isDeactivated?0.55:1}}>
+            <div style={{display:"flex",alignItems:"center",gap:11,minWidth:0}}>
+              <span style={{width:34,height:34,borderRadius:"50%",background:TP.accentSoft,color:TP.accentStrong,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,flexShrink:0}}>{initialsOf(m.fullName||m.email||"")}</span>
+              <span><div style={{fontWeight:600,fontSize:13.5,color:TP.text}}>{m.fullName||m.email||"Unknown"}</div><div style={{fontSize:11.5,color:TP.textMute}}>{m.email}</div></span>
             </div>
-            <div style={{textAlign:"right",flexShrink:0}}>
-              <div className="mono" style={{fontSize:17,fontWeight:800,color:P.text}}>{Object.entries(m.valueByCurrency).map(([cur,amt])=>fmtCurrency(amt,cur)).join(" + ")||fmtCurrency(0)}</div>
-              <div style={{fontSize:10.5,color:P.textMute,marginTop:2}}>active pipeline</div>
+            {isMe?<div style={{fontSize:12,fontWeight:700,color:TP.accentStrong}}>Admin</div>
+            :<select value={m.is_manager?"manager":"rep"} disabled={isDeactivated} onChange={e=>changeManagerFlag(m.id,e.target.value==="manager")} style={{border:`1px solid ${TP.border}`,borderRadius:8,background:isDeactivated?TP.surface2:TP.surface,color:isDeactivated?TP.textMute:TP.text,fontSize:12.5,fontWeight:600,padding:"6px 8px",width:"100%"}}>
+                <option value="rep">Rep</option>
+                <option value="manager">Manager</option>
+              </select>}
+            <div style={{...tpMono,fontSize:12.5,color:TP.textMute}}>{isMe?"—":`${m.dealCount} bivy${m.dealCount===1?"":"s"}`}</div>
+            <div><span style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:10.5,fontWeight:700,padding:"4px 10px",borderRadius:100,border:`1px solid ${TP.border}`,textTransform:"uppercase",letterSpacing:"0.03em",background:m.status==="active"?TP.accentSoft:TP.surface2,color:m.status==="active"?TP.accentStrong:TP.textMute,borderColor:m.status==="active"?TP.accent:TP.border}}>{isDeactivated?"Deactivated":m.status==="active"?"Active":"Invited"}</span></div>
+            <div style={{display:"flex",gap:12,justifyContent:"flex-end",flexWrap:"wrap"}}>
+              {m.status==="invited"&&<TPBtn kind="text" disabled={resendingId===m.user_id} onClick={()=>resendCode(m.user_id)}>{resendingId===m.user_id?"Sending…":"Resend"}</TPBtn>}
+              {!isMe&&!isDeactivated&&<TPBtn kind="danger" onClick={()=>openDeactivate(m)}>{m.dealCount>0?"Deactivate":"Remove"}</TPBtn>}
             </div>
+          </div>;
+        })}
+        <div id="tp-invite-anchor" style={{padding:20,borderTop:`1px solid ${TP.border}`}}>
+          <div style={{fontSize:13,fontWeight:700,color:TP.text,marginBottom:10}}>Invite a teammate</div>
+          <div style={{display:"flex",gap:8,marginBottom:8,flexWrap:"wrap"}}>
+            <input placeholder="Full name" value={inviteName} onChange={e=>setInviteName(e.target.value)} style={{flex:1,minWidth:160,border:`1px solid ${TP.border}`,borderRadius:8,padding:"9px 10px",fontSize:13}}/>
+            <input placeholder="teammate@company.com" value={inviteEmail} onChange={e=>setInviteEmail(e.target.value)} style={{flex:1,minWidth:200,border:`1px solid ${TP.border}`,borderRadius:8,padding:"9px 10px",fontSize:13}}/>
+            <select value={inviteIsManager?"manager":"rep"} onChange={e=>setInviteIsManager(e.target.value==="manager")} style={{border:`1px solid ${TP.border}`,borderRadius:8,padding:"9px 8px",fontSize:13}}>
+              <option value="rep">Rep</option>
+              <option value="manager">Manager</option>
+            </select>
+            <TPBtn kind="primary" disabled={inviteLoading||!inviteName.trim()||!inviteEmail.trim()} onClick={submitInvite}>{inviteLoading?"Please wait…":"Invite"}</TPBtn>
           </div>
-        ))}
-      </div>}
+          {inviteError&&<div style={{fontSize:12.5,color:TP.red,marginBottom:8}}>{inviteError}</div>}
+          <div style={{fontSize:12,color:TP.textMute,lineHeight:1.6}}>Creates their account and bivy immediately. Share the code below with them yourself (or the link, which skips typing it in) — they'll also get an activation email, when it lands.</div>
+          {inviteResult&&<div style={{marginTop:12,padding:"12px 14px",background:TP.accentSoft,border:`1px solid ${TP.borderStrong}`,borderRadius:10}}>
+            <div style={{fontSize:11,fontWeight:700,color:TP.accentStrong,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>{inviteResult.email}</div>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+              <div style={{...tpMono,fontSize:22,fontWeight:700,letterSpacing:"0.2em",color:TP.text}}>{inviteResult.code}</div>
+              <TPBtn kind="ghost" onClick={()=>navigator.clipboard.writeText(inviteResult.code)}>Copy code</TPBtn>
+            </div>
+            <TPBtn kind="ghost" onClick={()=>navigator.clipboard.writeText(inviteResult.activationUrl)}>Copy activation link</TPBtn>
+          </div>}
+        </div>
+      </div>
+      <div style={{padding:"16px 18px",border:`1px dashed ${TP.borderStrong}`,borderRadius:12,fontSize:12.5,color:TP.textMute,lineHeight:1.6,background:TP.surface2}}><b style={{color:TP.text}}>This replaces the old Settings modal</b> for Admin and Manager on Team plans. A Rep's own settings stay scoped to their profile, no billing tab appears there.</div>
+    </div>
+
+    {deactivateTarget&&<div style={{position:"fixed",inset:0,background:"rgba(20,17,12,0.45)",display:"flex",alignItems:"center",justifyContent:"center",padding:24,zIndex:1200}}>
+      <div style={{...tpFont,background:TP.surface,border:`1px solid ${TP.border}`,borderRadius:18,maxWidth:480,width:"100%"}}>
+        <div style={{padding:"22px 24px 14px",borderBottom:`1px solid ${TP.border}`}}>
+          <div style={{fontSize:17,fontWeight:700,color:TP.text}}>{deactivateDealCount>0?"Deactivate ":"Remove "}{deactivateTarget.fullName||deactivateTarget.email}</div>
+          <div style={{fontSize:13,color:TP.textMute,marginTop:6,lineHeight:1.5}}>{deactivateDealCount>0?`This won't show you what's inside any bivy. Choose who takes over ${deactivateDealCount} active bivy${deactivateDealCount===1?"":"s"} before their access is removed.`:`${deactivateTarget.fullName||deactivateTarget.email} has no bivys of their own, there's nothing to hand off.`}</div>
+        </div>
+        <div style={{padding:"16px 24px"}}>
+          {deactivateDealCount>0&&<select value={deactivateSuccessor} onChange={e=>setDeactivateSuccessor(e.target.value)} style={{width:"100%",border:`1px solid ${TP.border}`,borderRadius:9,padding:"9px 10px",fontSize:13.5,background:TP.surface,color:TP.text,marginBottom:14}}>
+            <option value="">Choose a successor…</option>
+            {members.filter(m=>m.user_id!==deactivateTarget.user_id&&m.status==="active").map(m=><option key={m.user_id} value={m.user_id}>Move all bivys to {m.fullName||m.email}</option>)}
+          </select>}
+          <div style={{fontSize:12.5,color:TP.textMute,lineHeight:1.5}}>☐ This immediately removes {deactivateTarget.fullName||deactivateTarget.email}'s access to myBivy. This can't be undone from here.</div>
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",gap:12,padding:"16px 24px",borderTop:`1px solid ${TP.border}`}}>
+          <TPBtn kind="ghost" onClick={()=>setDeactivateTarget(null)}>Cancel</TPBtn>
+          <TPBtn onClick={confirmDeactivate} disabled={deactivateLoading||(deactivateDealCount>0&&!deactivateSuccessor)} style={{background:TP.red,borderColor:TP.red,color:"#fff"}}>{deactivateLoading?"Please wait…":deactivateDealCount>0?"Deactivate":"Remove"}</TPBtn>
+        </div>
+      </div>
+    </div>}
+
+    {showBilling&&<TeamBillingModal orgId={orgId} planTier={planTier} subscriptionStatus={subscriptionStatus} currentPeriodEnd={currentPeriodEnd} hasStripeSubscription={hasStripeSubscription} onClose={()=>setShowBilling(false)}/>}
+
+    {showWizard&&<TeamSetupWizard onInvite={sendInvite} onDone={()=>{setShowWizard(false);load();}} onClose={()=>setShowWizard(false)}/>}
+
+    {showFirstTime&&<div style={{position:"fixed",inset:0,background:"rgba(20,17,12,0.45)",display:"flex",alignItems:"center",justifyContent:"center",padding:24,zIndex:1200}}>
+      <div style={{...tpFont,background:TP.surface,border:`1px solid ${TP.border}`,borderRadius:18,maxWidth:440,width:"100%",textAlign:"center",padding:"26px 24px 0"}}>
+        <div style={{width:38,height:38,borderRadius:10,background:TP.accent,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,margin:"0 auto 14px"}}>🧭</div>
+        <div style={{fontSize:17.5,fontWeight:700,color:TP.text}}>First time setting up Team?</div>
+        <div style={{fontSize:13.5,color:TP.textMute,lineHeight:1.6,marginTop:8}}>Walk through adding reps and choosing who's a Manager. You can add more or change roles anytime from the roster below.</div>
+        <div style={{display:"flex",justifyContent:"center",gap:12,padding:"20px 0"}}>
+          <TPBtn kind="ghost" onClick={()=>setShowFirstTime(false)}>Maybe later</TPBtn>
+          <TPBtn kind="primary" onClick={()=>{setShowFirstTime(false);setShowWizard(true);}}>Open setup walkthrough</TPBtn>
+        </div>
+      </div>
+    </div>}
+  </div>;
+};
+
+// Billing modal: reuses the exact same Netlify functions as Solo's billing (create-portal-
+// session.mts already generically handles update-card/cancel-plan for any Stripe
+// subscription, regardless of tier -- no separate Team portal endpoint needed). Only
+// checkout (first-time subscribe) needs a Team-specific function, since it has to pick one
+// of three flat-rate tier Prices instead of Solo's single price -- see
+// create-team-checkout-session.mts.
+const TeamBillingModal=({orgId,planTier,subscriptionStatus,currentPeriodEnd,hasStripeSubscription,onClose})=>{
+  const [tier,setTier]=useState(planTier&&TIER_PRICE[planTier]?planTier:"team_5");
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState("");
+  const price=TIER_PRICE[planTier]||TIER_PRICE[tier];
+
+  const openPortal=async()=>{
+    setLoading(true);setError("");
+    const {data:{session}}=await sb.auth.getSession();
+    try{
+      const res=await fetch("/api/create-portal-session",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({orgId,accessToken:session.access_token})});
+      const data=await res.json();
+      if(!res.ok||!data.url){setError(data.error||"Couldn't open billing portal");setLoading(false);return;}
+      window.location.href=data.url;
+    }catch{setError("Couldn't open billing portal");setLoading(false);}
+  };
+  const openCheckout=async()=>{
+    setLoading(true);setError("");
+    const {data:{session}}=await sb.auth.getSession();
+    try{
+      const res=await fetch("/api/create-team-checkout-session",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({orgId,accessToken:session.access_token,tier})});
+      const data=await res.json();
+      if(!res.ok||!data.url){setError(data.error||"Couldn't start checkout");setLoading(false);return;}
+      window.location.href=data.url;
+    }catch{setError("Couldn't start checkout");setLoading(false);}
+  };
+
+  return <div style={{position:"fixed",inset:0,background:"rgba(20,17,12,0.45)",display:"flex",alignItems:"center",justifyContent:"center",padding:24,zIndex:1200}}>
+    <div style={{...tpFont,background:TP.surface,border:`1px solid ${TP.border}`,borderRadius:18,maxWidth:480,width:"100%"}}>
+      <div style={{padding:"22px 24px 14px",borderBottom:`1px solid ${TP.border}`}}>
+        <div style={{fontSize:17,fontWeight:700,color:TP.text}}>{hasStripeSubscription?"Manage billing":"Subscribe to Team"}</div>
+        {hasStripeSubscription&&<div style={{fontSize:13,color:TP.textMute,marginTop:6}}>Team · {TIER_SEATS[planTier]} seats · ${price}/month{currentPeriodEnd?` · renews ${new Date(currentPeriodEnd).toLocaleDateString()}`:""}</div>}
+      </div>
+      <div style={{padding:"20px 24px"}}>
+        {!hasStripeSubscription&&<>
+          <div style={{fontSize:12,fontWeight:700,color:TP.textMute,marginBottom:6}}>SEAT TIER</div>
+          <select value={tier} onChange={e=>setTier(e.target.value)} style={{width:"100%",border:`1px solid ${TP.border}`,borderRadius:9,padding:"9px 10px",fontSize:13.5,marginBottom:16}}>
+            {Object.entries(TIER_SEATS).map(([k,seats])=><option key={k} value={k}>Up to {seats} reps — ${TIER_PRICE[k]}/mo</option>)}
+          </select>
+        </>}
+        {error&&<div style={{fontSize:12.5,color:TP.red,marginBottom:12}}>{error}</div>}
+        {hasStripeSubscription?<>
+          <div style={{fontSize:12,fontWeight:700,color:TP.textMute,marginBottom:6}}>PAYMENT METHOD</div>
+          <div style={{fontSize:13,color:TP.textMute,marginBottom:16}}>Managed in the Stripe billing portal — update card, view invoices, or cancel from there.</div>
+          <TPBtn kind="primary" disabled={loading} onClick={openPortal}>{loading?"Please wait…":"Open billing portal"}</TPBtn>
+        </>:<TPBtn kind="primary" disabled={loading} onClick={openCheckout}>{loading?"Please wait…":`Subscribe — $${TIER_PRICE[tier]}/mo`}</TPBtn>}
+      </div>
+      <div style={{display:"flex",justifyContent:"flex-end",padding:"16px 24px",borderTop:`1px solid ${TP.border}`}}>
+        <TPBtn kind="ghost" onClick={onClose}>Done</TPBtn>
+      </div>
+    </div>
+  </div>;
+};
+
+// Bulk-invite wizard -- each row calls the same provision-teammate flow as the roster's
+// single invite field, just sequentially, one Admin API call per row (no batch endpoint;
+// provisioning genuinely creates one auth.users row + one bivy per person, so there's no
+// meaningful way to batch it server-side without changing that function's contract).
+const TeamSetupWizard=({onInvite,onDone,onClose})=>{
+  const [step,setStep]=useState(0);
+  const [rows,setRows]=useState([{name:"",email:"",role:"rep"},{name:"",email:"",role:"rep"}]);
+  const [submitting,setSubmitting]=useState(false);
+  const [results,setResults]=useState([]);
+  const total=3;
+
+  const submit=async()=>{
+    setSubmitting(true);
+    const out=[];
+    for(const r of rows.filter(r=>r.name.trim()&&r.email.trim())){
+      try{await onInvite(r.name.trim(),r.email.trim(),r.role==="manager");out.push({email:r.email,ok:true});}
+      catch(e){out.push({email:r.email,ok:false,error:e.message});}
+    }
+    setResults(out);setSubmitting(false);setStep(2);
+  };
+
+  return <div style={{position:"fixed",inset:0,background:"rgba(20,17,12,0.45)",display:"flex",alignItems:"center",justifyContent:"center",padding:24,zIndex:1200}}>
+    <div style={{...tpFont,background:TP.surface,border:`1px solid ${TP.border}`,borderRadius:18,maxWidth:480,width:"100%",maxHeight:"88vh",overflowY:"auto"}}>
+      <div style={{padding:"22px 24px"}}>
+        <div style={{display:"flex",gap:6,marginBottom:14}}>{Array.from({length:total}).map((_,i)=><span key={i} style={{width:22,height:4,borderRadius:100,background:i<=step?TP.accent:TP.borderStrong}}/>)}</div>
+        {step===0&&<>
+          <div style={{fontSize:17,fontWeight:700,color:TP.text}}>Set up your team</div>
+          <div style={{fontSize:13,color:TP.textMute,marginTop:8}}>Creates rep accounts and their bivys, and sets who's a Manager, not what's inside anyone's deals.</div>
+        </>}
+        {step===1&&<>
+          <div style={{fontSize:17,fontWeight:700,color:TP.text}}>Add your team</div>
+          <div style={{fontSize:13,color:TP.textMute,margin:"8px 0 14px"}}>Each row creates one real account and an empty bivy immediately.</div>
+          {rows.map((r,i)=>(
+            <div key={i} style={{display:"grid",gridTemplateColumns:"1fr 1fr 110px 22px",gap:8,marginBottom:8,alignItems:"center"}}>
+              <input placeholder="Full name" value={r.name} onChange={e=>setRows(rs=>rs.map((x,j)=>j===i?{...x,name:e.target.value}:x))} style={{border:`1px solid ${TP.border}`,borderRadius:8,padding:"8px 10px",fontSize:13}}/>
+              <input type="email" placeholder="name@company.com" value={r.email} onChange={e=>setRows(rs=>rs.map((x,j)=>j===i?{...x,email:e.target.value}:x))} style={{border:`1px solid ${TP.border}`,borderRadius:8,padding:"8px 10px",fontSize:13}}/>
+              <select value={r.role} onChange={e=>setRows(rs=>rs.map((x,j)=>j===i?{...x,role:e.target.value}:x))} style={{border:`1px solid ${TP.border}`,borderRadius:8,padding:"8px 6px",fontSize:12.5}}>
+                <option value="rep">Rep</option>
+                <option value="manager">Manager</option>
+              </select>
+              <button onClick={()=>setRows(rs=>rs.filter((_,j)=>j!==i))} style={{background:"none",border:"none",color:TP.textFaint,cursor:"pointer",fontSize:15}}>✕</button>
+            </div>
+          ))}
+          <TPBtn kind="text" onClick={()=>setRows(rs=>[...rs,{name:"",email:"",role:"rep"}])}>+ Add another</TPBtn>
+        </>}
+        {step===2&&<>
+          <div style={{fontSize:17,fontWeight:700,color:TP.text}}>{submitting?"Setting up…":"You're set"}</div>
+          <div style={{fontSize:13,color:TP.textMute,margin:"8px 0"}}>{submitting?"Creating each account and bivy…":"Each teammate below is ready — share their code from the roster to get them activated."}</div>
+          {!submitting&&results.map(r=><div key={r.email} style={{fontSize:12.5,padding:"6px 0",color:r.ok?TP.text:TP.red}}>{r.ok?"✓":"✕"} {r.email}{!r.ok?` — ${r.error}`:""}</div>)}
+        </>}
+      </div>
+      <div style={{display:"flex",justifyContent:"space-between",gap:12,padding:"16px 24px",borderTop:`1px solid ${TP.border}`}}>
+        <TPBtn kind="ghost" onClick={()=>step===0?onClose():step===2?onDone():setStep(s=>s-1)} style={{visibility:step===1?"visible":step===0?"visible":"hidden"}}>{step===0?"Cancel":"Back"}</TPBtn>
+        {step<2?<TPBtn kind="primary" disabled={submitting} onClick={()=>step===1?submit():setStep(1)}>{step===1?(submitting?"Please wait…":"Finish"):"Next"}</TPBtn>
+        :<TPBtn kind="primary" onClick={onDone}>Done</TPBtn>}
+      </div>
     </div>
   </div>;
 };
@@ -2001,6 +2455,14 @@ function DealRoom({prospectShareSlug}) {
   const [subscriptionStatus,setSubscriptionStatus]=useState("trialing");
   const [trialEndsAt,setTrialEndsAt]=useState(null);
   const [hasStripeSubscription,setHasStripeSubscription]=useState(false); // organizations.stripe_subscription_id -- see org_is_locked (0032)
+  // Team Admin/Manager Rework, visual layer: which full-page screen (AdminPortalScreen /
+  // TeamOverviewScreen) an Admin or Manager lands on is gated on isTeamOrg, NOT on
+  // isAdmin/isManager alone -- a solo org's owner also carries both flags true (the
+  // solo-safety fix in 0040), and must keep seeing their own ordinary bivy exactly as
+  // before. Only an org actually on a team_5/10/15 plan_tier gets the new routing.
+  const [planTier,setPlanTier]=useState("trial");
+  const [currentPeriodEnd,setCurrentPeriodEnd]=useState(null);
+  const isTeamOrg=typeof planTier==="string"&&planTier.startsWith("team_");
   // organizations.onboarding_seen (0023) is the permanent gate, re-checked on every org data
   // load (not a one-time "just created" flag) -- so it still shows correctly if the owner
   // closes the tab before dismissing it, on their very next login.
@@ -2186,7 +2648,7 @@ function DealRoom({prospectShareSlug}) {
         // rep-profile source for the Welcome tab's AE card, no extra query needed.
         allContributorIds.length?sb.from("profiles").select("id,email,full_name,avatar_url,title,phone,linkedin_url,calendly_url").in("id",allContributorIds):{data:[]},
         allDealIds.length?sb.from("deal_risk_signals").select("*").in("deal_id",allDealIds):{data:[]},
-        sb.from("organizations").select("name,deal_room_limit,subscription_status,trial_ends_at,stripe_subscription_id,onboarding_seen,stage_labels,post_signature_stage_labels").eq("id",mem.org_id).single(),
+        sb.from("organizations").select("name,deal_room_limit,subscription_status,trial_ends_at,stripe_subscription_id,onboarding_seen,stage_labels,post_signature_stage_labels,plan_tier,current_period_end").eq("id",mem.org_id).single(),
         sb.from("profiles").select("full_name,email,avatar_url,title").eq("id",session.user.id).single(),
       ]);
       if(cancelled)return;
@@ -2201,6 +2663,8 @@ function DealRoom({prospectShareSlug}) {
       setSubscriptionStatus(orgRow?.subscription_status||"trialing");
       setTrialEndsAt(orgRow?.trial_ends_at||null);
       setHasStripeSubscription(!!orgRow?.stripe_subscription_id);
+      setPlanTier(orgRow?.plan_tier||"trial");
+      setCurrentPeriodEnd(orgRow?.current_period_end||null);
       setShowWelcome(orgRow?.onboarding_seen===false);
       setStageLabels({...DEFAULT_STAGE_LABELS,...(orgRow?.stage_labels||{})});
       setPostSignatureStageLabels({...DEFAULT_POST_SIGNATURE_STAGE_LABELS,...(orgRow?.post_signature_stage_labels||{})});
@@ -3153,16 +3617,24 @@ function DealRoom({prospectShareSlug}) {
       </div>
     </div>;
 
-  // Manager Overview (TEAM-VERSION-ADMIN-MANAGER-SPEC.md): full-screen replace, same
-  // pattern as the empty-state/main-view split below -- checked before either of those so
-  // it wins regardless of whether the signed-in owner/admin happens to have a `deal`
-  // selected already. No loading state to pass through here -- the sidebar's "Team"
-  // button (the only way to reach this screen) is itself gated on orgMembers.length>1,
-  // so orgMembers is always already populated by the time this can render.
-  if(showManagerOverview){
-    return <ManagerOverviewScreen members={orgMembers} deals={deals}
-      onSelectRep={(repId,repName)=>{setManagerViewRep({id:repId,name:repName});setShowManagerOverview(false);}}
-      onClose={()=>setShowManagerOverview(false)}/>;
+  // Team Admin/Manager Rework, visual layer: on a real Team org, Admin and Manager land on
+  // their own dedicated full-page screens unconditionally -- no shared sidebar/tab nav with
+  // Rep (spec B1) -- checked before everything else below so it wins regardless of whether
+  // a `deal` happens to be selected. isTeamOrg is the gate, not isAdmin/isManager alone: a
+  // solo org's owner carries both flags true too (0040's solo-safety fix) and must keep
+  // seeing their ordinary bivy, which is why this whole branch is skipped entirely for solo.
+  if(isTeamOrg&&isManager){
+    return <TeamOverviewScreen members={orgMembers} deals={deals} onReassign={reassignDeal}
+      impersonating={isAdmin} onToggleImpersonate={toggleViewAsManager}
+      avatarInitials={myProfile?.initials||"?"}/>;
+  }
+  if(isTeamOrg&&isAdmin){
+    return <>
+      <AdminPortalScreen orgId={orgId} myUserId={session?.user?.id} planTier={planTier}
+        subscriptionStatus={subscriptionStatus} currentPeriodEnd={currentPeriodEnd} hasStripeSubscription={hasStripeSubscription}
+        onToggleImpersonate={toggleViewAsManager} onOpenGeneralSettings={()=>setShowSettings(true)}/>
+      {showSettings&&<SettingsModal orgId={orgId} myUserId={session?.user?.id} myRole={myRole} isAdmin={isAdmin} isTeamOrg={isTeamOrg} onClose={()=>setShowSettings(false)}/>}
+    </>;
   }
 
   if(!deal){
@@ -3189,7 +3661,7 @@ function DealRoom({prospectShareSlug}) {
         :<button onClick={()=>setShowCreator(true)} style={{padding:"10px 20px",background:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>+ New Deal Room</button>}
       </div>
       {showCreator&&<DealCreator onSave={createDeal} onImport={importDeals} onClose={()=>setShowCreator(false)} stageLabels={stageLabels}/>}
-      {showSettings&&<SettingsModal orgId={orgId} myUserId={session?.user?.id} myRole={myRole} isAdmin={isAdmin} onClose={()=>setShowSettings(false)}/>}
+      {showSettings&&<SettingsModal orgId={orgId} myUserId={session?.user?.id} myRole={myRole} isAdmin={isAdmin} isTeamOrg={isTeamOrg} onClose={()=>setShowSettings(false)}/>}
       {showWelcome&&viewMode==="rep"&&<WelcomeOverlay onDone={dismissWelcome}/>}
     </div>;
   }
