@@ -2793,19 +2793,23 @@ function DealRoom({prospectShareSlug}) {
           (operating on whichever deal is currently active) as the spec's second suggested
           entry point, alongside EditDealModal's "Assigned To" field ("from the deal's
           settings, or directly from the Manager Overview when handing off an account"). */}
-      {managerViewRep&&<div style={{background:"rgba(255,255,255,0.06)",borderRadius:9,padding:"10px 12px",marginBottom:16}}>
-        <div style={{fontSize:10.5,letterSpacing:"0.04em",textTransform:"uppercase",color:"rgba(255,255,255,0.5)",marginBottom:5}}>Viewing as manager</div>
+      {/* Solid accent-orange background (not the subtle white-on-ink tint every other
+          sidebar panel uses) -- this banner is the ONLY way back out of a manager drill-in,
+          and Mark missed it entirely against the low-contrast original, mistaking "stuck in
+          drill-in" for a bug. Loud on purpose. */}
+      {managerViewRep&&<div style={{background:P.accent,borderRadius:9,padding:"10px 12px",marginBottom:16}}>
+        <div style={{fontSize:10.5,letterSpacing:"0.04em",textTransform:"uppercase",color:"rgba(255,255,255,0.85)",marginBottom:5}}>Viewing as manager</div>
         <div style={{fontSize:13.5,fontWeight:700,color:"#fff",marginBottom:9}}>{managerViewRep.name}'s deals</div>
         {deal&&orgMembers.length>0&&<div style={{marginBottom:9}}>
-          <div style={{fontSize:10.5,color:"rgba(255,255,255,0.5)",marginBottom:4}}>Reassign "{deal.company}" to</div>
-          <select value={deal.assignedTo} onChange={e=>reassignDeal(deal.id,e.target.value)} style={{width:"100%",padding:"6px 8px",borderRadius:6,border:"1px solid rgba(255,255,255,0.15)",background:"rgba(255,255,255,0.08)",color:"#fff",fontSize:11.5}}>
+          <div style={{fontSize:10.5,color:"rgba(255,255,255,0.85)",marginBottom:4}}>Reassign "{deal.company}" to</div>
+          <select value={deal.assignedTo} onChange={e=>reassignDeal(deal.id,e.target.value)} style={{width:"100%",padding:"6px 8px",borderRadius:6,border:"1px solid rgba(0,0,0,0.18)",background:"rgba(0,0,0,0.15)",color:"#fff",fontSize:11.5}}>
             {/* Same stale-assignment guard as EditDealModal's identical control -- see
                 that comment for why this fallback option is needed. */}
             {!orgMembers.some(m=>m.user_id===deal.assignedTo)&&<option value={deal.assignedTo} style={{color:"#000"}}>Former team member</option>}
             {orgMembers.map(m=><option key={m.user_id} value={m.user_id} style={{color:"#000"}}>{m.profile?.full_name||m.profile?.email||"Unnamed"}</option>)}
           </select>
         </div>}
-        <button onClick={()=>{setManagerViewRep(null);setShowManagerOverview(true);}} style={{width:"100%",padding:"7px 0",background:"rgba(255,255,255,0.1)",border:"none",borderRadius:6,color:"#fff",fontSize:11.5,fontWeight:600,cursor:"pointer"}}>← Back to Team Overview</button>
+        <button onClick={()=>{setManagerViewRep(null);setShowManagerOverview(true);}} style={{width:"100%",padding:"7px 0",background:"rgba(0,0,0,0.18)",border:"none",borderRadius:6,color:"#fff",fontSize:11.5,fontWeight:600,cursor:"pointer"}}>← Back to Team Overview</button>
       </div>}
       <div style={{flex:1,overflowY:"auto"}}>
         <div className="mono" style={{fontSize:10.5,letterSpacing:"0.08em",textTransform:"uppercase",color:"rgba(255,255,255,0.35)",marginBottom:12,padding:"0 6px"}}>Active Deals</div>
