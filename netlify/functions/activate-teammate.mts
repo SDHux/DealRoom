@@ -15,6 +15,7 @@ import type { Context, Config } from "@netlify/functions";
 // specific rep's already-issued code; verify_activation_code is the actual gate.
 
 const SUPABASE_URL = "https://hjumgvnuqvmxdusldeba.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_gRA_qf4uQVX9BKhJHuV6hQ_oMRTypV3";
 
 export default async (req: Request, context: Context) => {
   if (req.method !== "POST") {
@@ -44,13 +45,18 @@ export default async (req: Request, context: Context) => {
     "Content-Type": "application/json",
   };
 
-  // verify_activation_code is anon-callable by design (0044) -- calling it with the
-  // service-role key here is just this function's own choice of credential, not a
-  // requirement; either works since the function checks the target row directly, not
-  // auth.uid(). Using the service key keeps this function's headers consistent throughout.
+  // verify_activation_code is anon-callable BY DESIGN (0044 grants execute to
+  // authenticated, anon) -- and that grant is the reason it has to be called with the anon
+  // key, not the service-role key: 0044's "revoke all from public" on this function also
+  // revokes service_role's normally-implicit access through the public pseudo-role, since
+  // service_role was never explicitly re-granted alongside authenticated/anon. Found live
+  // during QA: calling this with serviceHeaders returned Postgres 42501, "permission denied
+  // for function verify_activation_code" -- not a logic bug in the function itself (direct
+  // SQL and a raw curl with the anon key both verified it works correctly).
+  const anonHeaders = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json" };
   const verifyRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/verify_activation_code`, {
     method: "POST",
-    headers: serviceHeaders,
+    headers: anonHeaders,
     body: JSON.stringify({ p_email: email, p_code: code }),
   });
   if (!verifyRes.ok) {
