@@ -16,6 +16,14 @@ const PROSPECT_ROUTE = (() => {
   return m ? m[1] : null;
 })();
 
+// A newly-provisioned teammate reaches their own activation screen via ?activate={email},
+// the link provision-teammate.mts hands back to the Admin alongside the 6-digit code (Team
+// Admin/Manager Rework, Data model #1). Same "read once at load" pattern as PROSPECT_ROUTE.
+const ACTIVATE_EMAIL = (() => {
+  const v = new URLSearchParams(window.location.search).get("activate");
+  return v ? decodeURIComponent(v) : null;
+})();
+
 const initialsOf = name => (name || "").split(" ").filter(Boolean).map(w => w[0]).join("").toUpperCase().slice(0, 2);
 const relTime = iso => {
   if (!iso) return "—";
@@ -1019,20 +1027,28 @@ const AuthGate = () => {
 
 // Shown instead of the normal AuthGate/app flow when DealRoom's onAuthStateChange catches a
 // PASSWORD_RECOVERY event -- Supabase establishes a real (if short-lived) session the moment
-// the user lands via their emailed reset link, before they've actually set a new password.
-// Signs out on success so onDone() reliably lands back on plain sign-in, rather than
-// silently dropping them into the app on that recovery session.
-const ResetPassword = ({onDone}) => {
+// this fires, before the user has actually set a new password. Two different paths land
+// here with the same event: a forgot-password emailed link, and (mode="activate") a
+// newly-provisioned teammate who just verified their 6-digit code (ActivateTeammate below,
+// via verifyOtp) -- same Supabase primitive, deliberately reused rather than building a
+// second "set your password" screen. The two modes diverge only in what happens after
+// updateUser succeeds: a forgot-password reset signs out so onDone() lands back on plain
+// sign-in (this session was never meant to continue); activation instead marks the teammate
+// active (complete_activation, 0044) and stays signed in, landing them straight in their
+// bivy -- that IS the point of the flow, not an accident to sign out of.
+const ResetPassword = ({onDone,mode}) => {
   const [password,setPassword]=useState("");
   const [error,setError]=useState("");
   const [loading,setLoading]=useState(false);
+  const isActivating=mode==="activate";
 
   const submit=async()=>{
     if(password.length<6){setError("Password must be at least 6 characters.");return;}
     setLoading(true);setError("");
     const {error:updErr}=await sb.auth.updateUser({password});
     if(updErr){setError(updErr.message||"Couldn't update password.");setLoading(false);return;}
-    await sb.auth.signOut();
+    if(isActivating){await sb.rpc("complete_activation");}
+    else{await sb.auth.signOut();}
     onDone();
   };
 
@@ -1045,13 +1061,70 @@ const ResetPassword = ({onDone}) => {
         <div style={{width:36,height:36,background:P.ink,borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{width:20,height:20}}>{LOGO_MARK}</div></div>
         <span className="headline" style={{fontSize:17,color:P.text}}>myBivy</span>
       </div>
-      <div className="headline" style={{fontSize:24,color:P.text,marginBottom:24}}>Set a new password</div>
+      <div className="headline" style={{fontSize:24,color:P.text,marginBottom:24}}>{isActivating?"Welcome! Set your password":"Set a new password"}</div>
       <div style={{marginBottom:20}}>
         <label style={lbl}>New Password</label>
         <input value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} type="password" placeholder="••••••••" style={inp}/>
         {error&&<div style={{fontSize:11,color:P.red,marginTop:6}}>{error}</div>}
       </div>
       <button onClick={submit} disabled={loading||!password} style={{width:"100%",padding:"12px",background:loading||!password?P.border:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:14,fontWeight:700,cursor:loading?"not-allowed":"pointer"}}>{loading?"Please wait…":"Set Password →"}</button>
+    </div>
+  </div>);
+};
+
+// First-login screen for a newly-provisioned teammate (Team Admin/Manager Rework, Data
+// model #1) -- reached via ?activate={email}, the link provision-teammate.mts hands the
+// Admin alongside the 6-digit code. Distinct from AuthGate's normal sign-in: this isn't a
+// password, it's a one-time code exchanged through activate-teammate.mts (which verifies it
+// against its own bcrypt hash + attempt cap + expiry, not Supabase's generic sign-in rate
+// limit -- see that function's comments for why) for a Supabase recovery token. Calling
+// verifyOtp with that token establishes a real session and fires the same PASSWORD_RECOVERY
+// event a forgot-password link would -- onVerified() here just flags that this particular
+// recovery session came from activation, so DealRoom's render logic shows ResetPassword in
+// "activate" mode (stays signed in) instead of "reset" mode (signs back out).
+const ActivateTeammate = ({initialEmail,onVerified}) => {
+  const [email,setEmail]=useState(initialEmail||"");
+  const [code,setCode]=useState("");
+  const [error,setError]=useState("");
+  const [loading,setLoading]=useState(false);
+
+  const submit=async()=>{
+    if(!email.trim()||code.trim().length!==6){setError("Enter your email and the 6-digit code exactly as sent.");return;}
+    setLoading(true);setError("");
+    try{
+      const res=await fetch("/api/activate-teammate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:email.trim(),code:code.trim()})});
+      const data=await res.json();
+      if(!res.ok){setError(data.error||"Couldn't activate your account.");setLoading(false);return;}
+      const {error:otpErr}=await sb.auth.verifyOtp({email:data.email,token_hash:data.tokenHash,type:"recovery"});
+      if(otpErr){setError(otpErr.message||"Couldn't finish activating your account.");setLoading(false);return;}
+      onVerified();
+    }catch{
+      setError("Couldn't reach the server. Check your connection and try again.");
+      setLoading(false);
+    }
+  };
+
+  const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:8,padding:"11px 14px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
+  const lbl={fontSize:11,fontWeight:700,color:P.textSec,textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:5};
+
+  return (<div style={{flex:1,minHeight:"100vh",background:"linear-gradient(135deg,#FBE9E2 0%,#F6F5F2 60%,#E1EEEC 100%)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+    <div style={{width:420,background:P.surface,borderRadius:20,padding:"44px 40px",boxShadow:"0 20px 60px rgba(27,31,35,0.10)",border:`1px solid ${P.border}`}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:28}}>
+        <div style={{width:36,height:36,background:P.ink,borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{width:20,height:20}}>{LOGO_MARK}</div></div>
+        <span className="headline" style={{fontSize:17,color:P.text}}>myBivy</span>
+      </div>
+      <div className="headline" style={{fontSize:24,color:P.text,marginBottom:8}}>Activate your account</div>
+      <div style={{fontSize:13,color:P.textSec,lineHeight:1.6,marginBottom:24}}>Enter the email and 6-digit code your admin gave you.</div>
+      <div style={{marginBottom:14}}>
+        <label style={lbl}>Email</label>
+        <input value={email} onChange={e=>setEmail(e.target.value)} type="email" placeholder="you@company.com" style={inp}/>
+      </div>
+      <div style={{marginBottom:20}}>
+        <label style={lbl}>6-Digit Code</label>
+        <input value={code} onChange={e=>setCode(e.target.value.replace(/[^0-9]/g,"").slice(0,6))} onKeyDown={e=>e.key==="Enter"&&submit()} inputMode="numeric" placeholder="123456" style={{...inp,letterSpacing:"0.3em",fontFamily:P.fontMono}}/>
+        {error&&<div style={{fontSize:11,color:P.red,marginTop:6}}>{error}</div>}
+      </div>
+      <button onClick={submit} disabled={loading} style={{width:"100%",padding:"12px",background:loading?P.border:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:14,fontWeight:700,cursor:loading?"not-allowed":"pointer"}}>{loading?"Please wait…":"Activate →"}</button>
     </div>
   </div>);
 };
@@ -1093,8 +1166,12 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
   const [org,setOrg]=useState(null);
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState("");
+  const [inviteName,setInviteName]=useState("");
   const [inviteEmail,setInviteEmail]=useState("");
-  const [inviteRole,setInviteRole]=useState("member");
+  const [inviteIsManager,setInviteIsManager]=useState(false);
+  const [inviteLoading,setInviteLoading]=useState(false);
+  const [inviteResult,setInviteResult]=useState(null); // {email,code,activationUrl} shown once after a successful provision
+  const [resendingId,setResendingId]=useState(null);
   const [orgName,setOrgName]=useState("");
   const [stageLabelsDraft,setStageLabelsDraft]=useState(DEFAULT_STAGE_LABELS);
   const [postSignatureStageLabelsDraft,setPostSignatureStageLabelsDraft]=useState(DEFAULT_POST_SIGNATURE_STAGE_LABELS);
@@ -1108,7 +1185,7 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
   const load=async()=>{
     setLoading(true);setError("");
     const [{data:mem,error:memErr},{data:inv,error:invErr},{data:orgRow,error:orgErr},{data:myProf,error:myProfErr}]=await Promise.all([
-      sb.from("organization_members").select("id,user_id,role,created_at").eq("org_id",orgId),
+      sb.from("organization_members").select("id,user_id,role,status,is_admin,is_manager,created_at").eq("org_id",orgId),
       sb.from("org_invitations").select("id,email,role,created_at,expires_at").eq("org_id",orgId).is("accepted_at",null),
       sb.from("organizations").select("name,logo_url,deal_room_limit,subscription_status,trial_ends_at,current_period_end,stripe_subscription_id,stage_labels,post_signature_stage_labels").eq("id",orgId).single(),
       sb.from("profiles").select("full_name,email,title,phone,linkedin_url,calendly_url,avatar_url").eq("id",myUserId).single(),
@@ -1134,16 +1211,38 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
 
   const canManage=targetRole=>myRole==="owner"||(myRole==="admin"&&targetRole==="member");
 
+  // Team Admin/Manager Rework, Data model #1: invite = real account/bivy provisioning, not
+  // a passive org_invitations row -- see provision-teammate.mts. Goes through that Netlify
+  // function (Admin API for the auth.users creation, not a client-side table insert) rather
+  // than this modal talking to Supabase directly, since account creation needs privilege no
+  // plain client session has.
   const sendInvite=async()=>{
-    if(!inviteEmail.trim())return;
-    // invited_by is required (not null + RLS with-check invited_by = auth.uid()) -- omitting
-    // it made every invite fail with "new row violates row-level security policy", 100% of
-    // the time, since this table's insert policy has no way to treat a null invited_by as
-    // the caller.
-    const {error:err}=await sb.from("org_invitations").insert({org_id:orgId,email:inviteEmail.trim().toLowerCase(),role:inviteRole,invited_by:myUserId});
-    if(err){setError(err.code==="23505"?"There's already a pending invite for that email.":"Couldn't send invite");return;}
-    setInviteEmail("");setError("");
-    load();
+    if(!inviteName.trim()||!inviteEmail.trim())return;
+    setInviteLoading(true);setError("");setInviteResult(null);
+    const {data:{session}}=await sb.auth.getSession();
+    try{
+      const res=await fetch("/api/provision-teammate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+        orgId,accessToken:session?.access_token,fullName:inviteName.trim(),email:inviteEmail.trim(),isManager:inviteIsManager,
+      })});
+      const data=await res.json();
+      if(!res.ok){setError(data.message||data.error||"Couldn't add teammate");setInviteLoading(false);return;}
+      setInviteResult(data);
+      setInviteName("");setInviteEmail("");setInviteIsManager(false);
+      load();
+    }catch{
+      setError("Couldn't reach the server. Check your connection and try again.");
+    }
+    setInviteLoading(false);
+  };
+  // Pure Postgres RPC (0044) -- doesn't touch auth.users at all under the revised design
+  // (the code is verified against its own hash, never the rep's literal Supabase password),
+  // so no Netlify function is needed for this one, unlike the initial provisioning step.
+  const resendCode=async userId=>{
+    setResendingId(userId);setError("");setInviteResult(null);
+    const {data,error:err}=await sb.rpc("resend_teammate_code",{p_org_id:orgId,p_user_id:userId});
+    if(err){setError(err.message||"Couldn't resend code");setResendingId(null);return;}
+    setInviteResult({...data,activationUrl:`${window.location.origin}/?activate=${encodeURIComponent(data.email)}`});
+    setResendingId(null);
   };
   const cancelInvite=async id=>{await sb.from("org_invitations").delete().eq("id",id);load();};
   const changeRole=async(memberId,role)=>{await sb.from("organization_members").update({role}).eq("id",memberId);load();};
@@ -1255,6 +1354,7 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
                 <div style={{fontSize:13,fontWeight:600,color:P.text}}>{m.fullName||m.email||"Unknown"}</div>
                 <div style={{fontSize:11,color:P.textMute}}>{m.email}</div>
               </div>
+              {m.status==="invited"&&<Badge small label="invited" color={P.amber} bg={P.amberBg} border={P.amberBorder}/>}
               {m.user_id===myUserId?<Badge small label={m.role} color={P.accent} bg={P.accentLight} border="#F0C9B7"/>
               :canManage(m.role)?(<>
                 <select value={m.role} onChange={e=>changeRole(m.id,e.target.value)} style={{...inp,width:110,padding:"5px 8px",fontSize:11}}>
@@ -1267,28 +1367,56 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
           ))}
 
           <div style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",margin:"20px 0 10px"}}>Invite a teammate</div>
-          {/* TEMPORARY LOCKDOWN: Team tier has open bugs (member profile access, an easy-to-
-              trigger-by-accident reassign control, a manager-view navigation dead end) still
-              being ironed out. Blocks a solo (1-member) org from ever sending its first
-              invite -- the org that's already multi-member (used for iterating on these bugs)
-              is deliberately left working, everyone else can't reach this at all. Remove this
-              gate once the open issues are resolved. */}
+          {/* TEMPORARY LOCKDOWN: Team tier has open bugs (an easy-to-trigger-by-accident
+              reassign control, a manager-view navigation dead end, the fuller Admin Portal
+              UI) still being ironed out. Blocks a solo (1-member) org from ever sending its
+              first invite -- the org that's already multi-member (used for iterating on
+              these bugs) is deliberately left working, everyone else can't reach this at
+              all. Remove this gate once the open issues are resolved. The invite mechanism
+              itself (provision-teammate.mts, this section below) is the real, reviewed
+              Data model #1 implementation, not a placeholder -- only the *availability* is
+              still gated, not the flow's correctness. */}
           {members.length===1?
             <div style={{fontSize:12,color:P.textSec,lineHeight:1.6,marginBottom:16,padding:"10px 12px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:8}}>Team invites are temporarily unavailable while we finish testing the Team features. Check back soon.</div>
           :<>
             <div style={{display:"flex",gap:8,marginBottom:8}}>
-              <input placeholder="teammate@company.com" value={inviteEmail} onChange={e=>setInviteEmail(e.target.value)} style={inp}/>
-              <select value={inviteRole} onChange={e=>setInviteRole(e.target.value)} style={{...inp,width:110}}>
-                {myRole==="owner"&&<option value="admin">admin</option>}
-                <option value="member">member</option>
-              </select>
-              <button onClick={sendInvite} style={{padding:"9px 16px",background:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>Invite</button>
+              <input placeholder="Full name" value={inviteName} onChange={e=>setInviteName(e.target.value)} style={{...inp,flex:1}}/>
+              <input placeholder="teammate@company.com" value={inviteEmail} onChange={e=>setInviteEmail(e.target.value)} style={{...inp,flex:1}}/>
             </div>
-            <div style={{fontSize:11,color:P.textMute,lineHeight:1.6,marginBottom:16}}>Share this app's sign-up link with them directly -- once they sign up with this exact email, they'll join your team automatically instead of creating a new organization.</div>
+            <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"center"}}>
+              <select value={inviteIsManager?"manager":"rep"} onChange={e=>setInviteIsManager(e.target.value==="manager")} style={{...inp,width:110}}>
+                <option value="rep">Rep</option>
+                <option value="manager">Manager</option>
+              </select>
+              <button onClick={sendInvite} disabled={inviteLoading||!inviteName.trim()||!inviteEmail.trim()} style={{padding:"9px 16px",background:inviteLoading?P.border:P.accent,border:"none",borderRadius:6,color:"#fff",fontSize:12,fontWeight:700,cursor:inviteLoading?"not-allowed":"pointer",whiteSpace:"nowrap"}}>{inviteLoading?"Please wait…":"Invite"}</button>
+            </div>
+            <div style={{fontSize:11,color:P.textMute,lineHeight:1.6,marginBottom:16}}>Creates their account and bivy immediately. Share the code below with them yourself (or the link, which skips typing it in) -- they'll also get an activation email, when it lands.</div>
+          </>}
+
+          {inviteResult&&<div style={{marginBottom:16,padding:"12px 14px",background:P.accentLight,border:"1px solid #F0C9B7",borderRadius:8}}>
+            <div style={{fontSize:11,fontWeight:700,color:P.accentMid,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>{inviteResult.email}</div>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+              <div className="mono" style={{fontSize:22,fontWeight:700,letterSpacing:"0.2em",color:P.text}}>{inviteResult.code}</div>
+              <button onClick={()=>navigator.clipboard.writeText(inviteResult.code)} style={{padding:"5px 10px",background:P.surface,border:`1px solid ${P.border}`,borderRadius:6,fontSize:11,color:P.textSec,cursor:"pointer"}}>Copy code</button>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <button onClick={()=>navigator.clipboard.writeText(inviteResult.activationUrl)} style={{padding:"5px 10px",background:P.surface,border:`1px solid ${P.border}`,borderRadius:6,fontSize:11,color:P.textSec,cursor:"pointer"}}>Copy activation link</button>
+              <button onClick={()=>setInviteResult(null)} style={{background:"none",border:"none",color:P.textMute,fontSize:11,cursor:"pointer"}}>Dismiss</button>
+            </div>
+          </div>}
+
+          {members.some(m=>m.status==="invited")&&<>
+            <div style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>Awaiting activation</div>
+            {members.filter(m=>m.status==="invited").map(m=>(
+              <div key={m.id} style={{display:"flex",alignItems:"center",gap:10,padding:"7px 0"}}>
+                <div style={{flex:1,fontSize:13,color:P.text}}>{m.fullName||m.email}</div>
+                <button onClick={()=>resendCode(m.user_id)} disabled={resendingId===m.user_id} style={{background:"none",border:"none",color:resendingId===m.user_id?P.textMute:P.accent,fontSize:11,fontWeight:600,cursor:resendingId===m.user_id?"not-allowed":"pointer"}}>{resendingId===m.user_id?"Sending…":"Resend code"}</button>
+              </div>
+            ))}
           </>}
 
           {invites.length>0&&<>
-            <div style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>Pending invites</div>
+            <div style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>Pending invites (legacy)</div>
             {invites.map(i=>(
               <div key={i.id} style={{display:"flex",alignItems:"center",gap:10,padding:"7px 0"}}>
                 <div style={{flex:1,fontSize:13,color:P.text}}>{i.email}</div>
@@ -1772,6 +1900,13 @@ const ManagerOverviewScreen = ({members,deals,onSelectRep,onClose}) => {
 function DealRoom({prospectShareSlug}) {
   const [session,setSession]=useState(undefined); // undefined=checking, null=signed out, object=signed in
   const [isPasswordRecovery,setIsPasswordRecovery]=useState(false); // true between landing on a reset-password link and setting a new password
+  // Newly-provisioned teammate flow (Team Admin/Manager Rework, Data model #1). showActivateScreen
+  // starts true only when the URL actually carries ?activate=email; activatingViaCode flags
+  // that the PASSWORD_RECOVERY session about to fire came from ActivateTeammate's code
+  // exchange, not a forgot-password email link, so ResetPassword renders in "activate" mode
+  // (stays signed in) instead of "reset" mode (signs back out) -- see ResetPassword's comment.
+  const [showActivateScreen,setShowActivateScreen]=useState(!!ACTIVATE_EMAIL);
+  const [activatingViaCode,setActivatingViaCode]=useState(false);
   const [needsOrgSetup,setNeedsOrgSetup]=useState(false);
   const [refreshKey,setRefreshKey]=useState(0);
   const [orgId,setOrgId]=useState(null);
@@ -2780,7 +2915,11 @@ function DealRoom({prospectShareSlug}) {
   } else {
     // Rep path: auth, then org bootstrap, then real data load.
     if(session===undefined)return <LoadingScreen/>;
-    if(isPasswordRecovery)return <ResetPassword onDone={()=>setIsPasswordRecovery(false)}/>;
+    // Checked before isPasswordRecovery/AuthGate -- a fresh teammate landing on ?activate=
+    // link hasn't verified their code yet, so no PASSWORD_RECOVERY event exists to catch
+    // and there's nothing for the normal sign-in form to do with a one-time code anyway.
+    if(showActivateScreen)return <ActivateTeammate initialEmail={ACTIVATE_EMAIL} onVerified={()=>{setActivatingViaCode(true);setShowActivateScreen(false);}}/>;
+    if(isPasswordRecovery)return <ResetPassword mode={activatingViaCode?"activate":"reset"} onDone={()=>{setIsPasswordRecovery(false);setActivatingViaCode(false);}}/>;
     if(session===null)return <AuthGate/>;
     if(needsOrgSetup)return <NameYourOrg onDone={()=>{setNeedsOrgSetup(false);setRefreshKey(k=>k+1);}}/>;
     if(loadingDeals)return <LoadingScreen/>;
