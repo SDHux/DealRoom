@@ -913,10 +913,11 @@ const DealCreator = ({onSave,onImport,onClose,stageLabels}) => {
   </div>);
 };
 
-// Both null until Mark hands over the real policy URLs (Termly, a lawyer template, or
-// hand-written pages) -- while null, the signup checkbox renders these as plain "(pending)"
-// text instead of a dead link, so it's obviously unfinished rather than silently broken.
-// Setting these two constants is the entire cutover once the content exists.
+// TODO(Mark): paste the two live Termly policy URLs here -- e.g.
+// "https://app.termly.io/policy-viewer/policy.html?policyUUID=..." -- for both Terms of
+// Service and Privacy Policy. That's the entire cutover: once these two constants are set,
+// the signup checkbox below automatically switches from plain text to real clickable links.
+// Leave both null only until the URLs are in hand -- don't ship a fake/placeholder URL.
 const TERMS_URL = null;
 const PRIVACY_URL = null;
 
@@ -1000,10 +1001,10 @@ const AuthGate = () => {
           <input type="checkbox" checked={termsAccepted} onChange={e=>setTermsAccepted(e.target.checked)} style={{marginTop:2}}/>
           <span>I agree to the{" "}
             {TERMS_URL?<a href={TERMS_URL} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{color:P.accent,fontWeight:600}}>Terms of Service</a>
-            :<span style={{fontStyle:"italic",color:P.textMute}}>Terms of Service (pending)</span>}
+            :<span style={{fontWeight:600,color:P.text}}>Terms of Service</span>}
             {" "}and{" "}
             {PRIVACY_URL?<a href={PRIVACY_URL} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{color:P.accent,fontWeight:600}}>Privacy Policy</a>
-            :<span style={{fontStyle:"italic",color:P.textMute}}>Privacy Policy (pending)</span>}
+            :<span style={{fontWeight:600,color:P.text}}>Privacy Policy</span>}
           </span>
         </label>}
         <button onClick={submit} disabled={loading||!email||!password||(mode==="signup"&&(!orgName||!termsAccepted))} style={{width:"100%",padding:"12px",background:loading||!email||!password?P.border:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:14,fontWeight:700,cursor:loading?"not-allowed":"pointer"}}>{loading?"Please wait…":mode==="signup"?"Create Workspace →":"Sign In →"}</button>
