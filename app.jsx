@@ -1095,7 +1095,11 @@ const ActivateTeammate = ({initialEmail,onVerified}) => {
       const res=await fetch("/api/activate-teammate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:email.trim(),code:code.trim()})});
       const data=await res.json();
       if(!res.ok){setError(data.error||"Couldn't activate your account.");setLoading(false);return;}
-      const {error:otpErr}=await sb.auth.verifyOtp({email:data.email,token_hash:data.tokenHash,type:"recovery"});
+      // token_hash-based verifyOtp takes ONLY token_hash + type -- Supabase rejects the call
+      // ("Only the token_hash and type should be provided") if email rides along too; email
+      // is exclusively for the other verifyOtp overload (email + a 6-digit OTP token, not
+      // this token_hash flow). Found live during QA.
+      const {error:otpErr}=await sb.auth.verifyOtp({token_hash:data.tokenHash,type:"recovery"});
       if(otpErr){setError(otpErr.message||"Couldn't finish activating your account.");setLoading(false);return;}
       onVerified();
     }catch{
