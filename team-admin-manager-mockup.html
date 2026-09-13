@@ -1,0 +1,862 @@
+<title>Manager Overview</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Mono:wght@500;600&display=swap');
+
+:root{
+  --bg:#fbfaf8; --surface:#ffffff; --surface-2:#f5f3ee;
+  --border:#e9e5db; --border-strong:#d3ccb9;
+  --text:#181613; --text-muted:#6b6355; --text-faint:#a89d89;
+  --accent:#c15a3c; --accent-strong:#9c4530; --accent-soft:#f7e2d3;
+  --shadow: 0 1px 2px rgba(34,25,17,.06), 0 8px 24px -12px rgba(34,25,17,.18);
+  --shadow-lg: 0 20px 60px -20px rgba(34,25,17,.35);
+  --st-discovery:#93a6c4; --st-evaluation:#8b93b8; --st-trial:#a288ab;
+  --st-proposal:#b98a94; --st-negotiation:#c39a68; --st-won:#5f8f74; --st-lost:#a89d8c;
+}
+/* This mockup mirrors a specific bright product screen on purpose, so it
+   intentionally stays light regardless of the viewer's system theme. */
+
+*{box-sizing:border-box;}
+html,body{margin:0;}
+body{background:var(--bg); color:var(--text); font-family:'Archivo',-apple-system,BlinkMacSystemFont,sans-serif; padding:0 20px 64px; -webkit-font-smoothing:antialiased;}
+h1,h2,h3{text-wrap:balance; margin:0;}
+.mono{font-family:'IBM Plex Mono',ui-monospace,monospace; font-variant-numeric:tabular-nums;}
+a{color:inherit;}
+button, select, input{font-family:inherit;}
+.shell{max-width:1100px; margin:0 auto;}
+
+/* ---------- Prototype strip ---------- */
+.protobar{
+  display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:9px 12px; margin-top:16px;
+  border:1px dashed var(--border-strong); border-radius:10px; background:var(--surface-2);
+  font-size:.76rem; color:var(--text-muted);
+}
+.protobar-label{text-transform:uppercase; letter-spacing:.07em; font-weight:700; color:var(--text-faint); font-size:.66rem;}
+.protobar select{
+  border:1px solid var(--border); border-radius:7px; background:var(--surface); color:var(--text);
+  font-size:.8rem; font-weight:600; padding:5px 8px;
+}
+
+/* ---------- Top bar ---------- */
+.topbar{
+  display:flex; align-items:center; gap:16px; padding:14px 20px; margin-bottom:22px; flex-wrap:wrap;
+  background:#171512; border-radius:14px;
+}
+.wordmark{display:flex; align-items:center; gap:9px; font-family:'Archivo',sans-serif; font-weight:800; font-size:1.22rem; letter-spacing:-0.01em; color:#ffffff;}
+.wordmark .mark{
+  width:26px;height:26px;border-radius:7px; background:linear-gradient(155deg, var(--accent), var(--accent-strong));
+  display:inline-flex;align-items:center;justify-content:center; color:var(--surface); font-family:'Archivo',sans-serif; font-weight:700; font-size:.82rem; flex-shrink:0;
+}
+.role-badge{
+  display:inline-flex; align-items:center; gap:6px; font-size:.76rem; font-weight:700; padding:5px 11px; border-radius:100px;
+  background:var(--surface-2); border:1px solid var(--border); color:var(--text-muted); text-transform:uppercase; letter-spacing:.04em;
+}
+.role-badge.impersonating{background:var(--accent-soft); border:1px dashed var(--accent); color:var(--accent-strong);}
+.impersonate-btn{
+  border:1px solid var(--border-strong); background:var(--surface); color:var(--text); border-radius:100px;
+  font-size:.78rem; font-weight:600; padding:6px 13px; cursor:pointer; display:inline-flex; align-items:center; gap:6px;
+}
+.impersonate-btn:hover{background:var(--surface-2);}
+.impersonate-btn.active{background:var(--accent); border-color:var(--accent); color:var(--surface);}
+.topbar-right{display:flex; align-items:center; gap:12px; margin-left:auto;}
+.org-pill{
+  font-size:.78rem; color:var(--text-muted); background:var(--surface-2); border:1px solid var(--border);
+  padding:5px 11px; border-radius:100px; display:flex; align-items:center; gap:7px; white-space:nowrap;
+}
+.seat-dot{width:6px;height:6px;border-radius:50%; background:var(--accent);}
+.avatar{
+  width:32px;height:32px;border-radius:50%; background:var(--accent-soft); color:var(--accent-strong);
+  display:flex;align-items:center;justify-content:center; font-size:.76rem; font-weight:700; flex-shrink:0; border:1px solid var(--border-strong);
+}
+
+.impersonate-banner{
+  display:flex; align-items:center; gap:10px; padding:10px 16px; margin-bottom:20px; border-radius:10px;
+  background:var(--accent-soft); border:1px dashed var(--accent); color:var(--accent-strong); font-size:.84rem; font-weight:600;
+}
+.impersonate-banner button{
+  margin-left:auto; background:var(--surface); border:1px solid var(--accent); color:var(--accent-strong);
+  border-radius:8px; font-size:.8rem; font-weight:700; padding:6px 12px; cursor:pointer;
+}
+
+.crumbs{display:flex; align-items:center; gap:8px; font-size:.9rem; color:var(--text-muted); margin-bottom:6px;}
+.crumbs .sep{color:var(--text-faint);}
+.crumbs .current{color:var(--text); font-weight:600;}
+.crumb-link{display:inline-flex; align-items:center; gap:6px; background:none;border:none;color:var(--text-muted); font-size:.9rem; cursor:pointer; padding:2px; border-radius:6px;}
+.crumb-link:hover{color:var(--accent);}
+.crumb-link:focus-visible, .rep-row:focus-visible, .tab:focus-visible, .back-pill:focus-visible, .impersonate-btn:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+
+/* ---------- Page heading ---------- */
+.page-head{display:flex; justify-content:space-between; align-items:flex-end; gap:24px; margin-bottom:22px; flex-wrap:wrap;}
+.page-head h1{font-size:1.5rem; font-weight:700; letter-spacing:-0.01em;}
+.page-head .sub{color:var(--text-muted); font-size:.92rem; margin-top:5px; max-width:56ch;}
+.tabs{display:flex; gap:4px; background:var(--surface-2); padding:4px; border-radius:10px; border:1px solid var(--border);}
+.tab{border:none; background:none; padding:7px 13px; border-radius:7px; font-size:.84rem; font-weight:600; color:var(--text-muted); cursor:pointer;}
+.tab.active{background:var(--surface); color:var(--text); box-shadow:var(--shadow);}
+
+/* ---------- Buttons ---------- */
+.btn{border-radius:9px; font-size:.84rem; font-weight:600; padding:9px 15px; cursor:pointer; display:inline-flex; align-items:center; gap:7px; white-space:nowrap;}
+.btn-primary{background:var(--accent); color:var(--surface); border:1px solid var(--accent);}
+.btn-primary:hover{background:var(--accent-strong); border-color:var(--accent-strong);}
+.btn-ghost{background:var(--surface); color:var(--text); border:1px solid var(--border-strong);}
+.btn-ghost:hover{background:var(--surface-2);}
+.btn-text{background:none; border:none; color:var(--accent); font-weight:600; font-size:.82rem; padding:4px 2px; cursor:pointer;}
+.btn-danger-text{background:none; border:none; color:#a8564f; font-weight:600; font-size:.82rem; padding:4px 2px; cursor:pointer;}
+.btn:disabled{opacity:.5; cursor:not-allowed;}
+
+/* ---------- Stat strip ---------- */
+.stats{display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:26px;}
+.stats.cols-4{grid-template-columns:repeat(2,1fr); max-width:640px;}
+.stat{background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:18px 20px;}
+.stat.b-black{border-top:3px solid var(--text);}
+.stat.b-accent{border-top:3px solid var(--accent);}
+.stat.b-gold{border-top:3px solid var(--st-negotiation);}
+.stat.b-green{border-top:3px solid var(--st-won);}
+.stat .label{font-size:.74rem; text-transform:uppercase; letter-spacing:.07em; color:var(--text-faint); font-weight:600;}
+.stat .value{font-family:'IBM Plex Mono',monospace; font-size:1.7rem; font-weight:600; margin-top:8px; letter-spacing:-0.01em;}
+.stat .note{font-size:.8rem; color:var(--text-muted); margin-top:4px;}
+.stat-clickable{border:1px solid var(--border); font-family:inherit; width:100%;}
+.stat-clickable:hover{border-color:var(--accent); box-shadow:var(--shadow);}
+.stat-clickable:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+
+/* ---------- Panel ---------- */
+.panel{background:var(--surface); border:1px solid var(--border); border-radius:16px; overflow:hidden; margin-bottom:20px;}
+.panel-head{display:flex; justify-content:space-between; align-items:center; gap:16px; padding:16px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap;}
+.panel-head.green{background:color-mix(in srgb, var(--st-won) 16%, white);}
+.panel-head.green h2{color:color-mix(in srgb, var(--st-won) 70%, black);}
+.panel-head h2{font-size:1.02rem; font-weight:700;}
+.sort-note{font-size:.78rem; color:var(--text-faint);}
+
+.legend{display:flex; flex-wrap:wrap; gap:12px; padding:12px 20px; border-bottom:1px solid var(--border); background:var(--surface-2);}
+.legend-item{display:flex; align-items:center; gap:6px; font-size:.74rem; color:var(--text-muted);}
+.legend-swatch{width:9px;height:9px;border-radius:2px;}
+
+/* ---------- Rep rows ---------- */
+.rep-row{
+  display:grid; grid-template-columns: 1.6fr 90px 1.3fr 1.3fr auto 18px; align-items:center; gap:18px; padding:16px 20px;
+  border-bottom:1px solid var(--border); cursor:pointer; background:none;
+  width:100%; text-align:left; color:inherit;
+}
+.rep-row:last-child{border-bottom:none;}
+.rep-row:hover{background:var(--surface-2);}
+.rep-id{display:flex; align-items:center; gap:11px; min-width:0;}
+.rep-name{font-weight:600; font-size:.94rem;}
+.rep-meta{font-size:.78rem; color:var(--text-muted);}
+.rep-avatar{width:34px;height:34px;border-radius:50%; flex-shrink:0; display:flex;align-items:center;justify-content:center; font-size:.76rem; font-weight:700; color:var(--surface); background:var(--accent);}
+.deal-count{font-family:'IBM Plex Mono',monospace; font-size:.9rem; color:var(--text-muted);}
+.deal-count b{color:var(--text); font-weight:600;}
+.pipe-col .amt{font-family:'IBM Plex Mono',monospace; font-weight:600; font-size:.92rem; margin-bottom:6px;}
+.bar-track{height:6px; background:var(--surface-2); border-radius:100px; overflow:hidden; border:1px solid var(--border);}
+.bar-fill{height:100%; background:var(--accent); border-radius:100px;}
+.stage-col .stage-track{display:flex; height:16px; border-radius:5px; overflow:hidden; border:1px solid var(--border);}
+.stage-seg{height:100%;}
+.stage-col .stage-caption{font-size:.72rem; color:var(--text-faint); margin-top:6px;}
+.chev{color:var(--text-faint); font-size:1rem;}
+
+/* ---------- Drill-in / rep home ---------- */
+.back-pill{display:inline-flex; align-items:center; gap:7px; background:var(--surface-2); border:1px solid var(--border); padding:8px 14px; border-radius:100px; font-size:.85rem; font-weight:600; color:var(--text); cursor:pointer;}
+.back-pill:hover{border-color:var(--border-strong);}
+.drill-top{display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:18px; flex-wrap:wrap;}
+.rep-banner{display:flex; align-items:center; gap:16px; margin-bottom:22px; flex-wrap:wrap;}
+.rep-banner .rep-avatar{width:48px;height:48px;font-size:1rem;}
+.rep-banner h1{font-size:1.35rem;}
+.rep-banner .sub{color:var(--text-muted); font-size:.88rem; margin-top:3px;}
+.coach-note{display:flex; align-items:center; gap:8px; background:var(--accent-soft); color:var(--accent-strong); border:1px solid var(--border); padding:8px 14px; border-radius:10px; font-size:.8rem; max-width:320px;}
+
+.deal-card{display:grid; grid-template-columns: 1.5fr 110px 130px 1.1fr; gap:18px; align-items:center; padding:17px 20px; border-bottom:1px solid var(--border);}
+.deal-card:last-child{border-bottom:none;}
+.deal-name{font-weight:600; font-size:.94rem;}
+.deal-meta{font-size:.78rem; color:var(--text-muted); margin-top:3px;}
+.stage-chip{display:inline-flex; align-items:center; gap:6px; font-size:.76rem; font-weight:600; padding:4px 10px; border-radius:100px; background:var(--surface-2); border:1px solid var(--border); white-space:nowrap;}
+.stage-chip .dot{width:7px;height:7px;border-radius:50%;}
+.deal-amt{font-family:'IBM Plex Mono',monospace; font-weight:600; font-size:.92rem; text-align:right;}
+
+.mapping{display:flex; flex-direction:column; gap:6px;}
+.mapping-top{display:flex; align-items:center; gap:9px;}
+.pips{display:flex; gap:4px;}
+.pip{width:9px;height:9px;border-radius:2px; border:1.4px solid var(--accent);}
+.pip.filled{background:var(--accent);}
+.pip.empty{background:transparent; border-color:var(--border-strong);}
+.mapping-frac{font-family:'IBM Plex Mono',monospace; font-size:.78rem; color:var(--text-muted);}
+.mapping-areas{font-size:.72rem; color:var(--text-faint); line-height:1.5;}
+.mapping-areas .missing{color:var(--text-muted); font-weight:600;}
+
+.footnote{margin-top:8px; padding:16px 18px; border:1px dashed var(--border-strong); border-radius:12px; font-size:.8rem; color:var(--text-muted); line-height:1.6; background:var(--surface-2);}
+.footnote b{color:var(--text);}
+.footnote + .footnote{margin-top:12px;}
+
+/* ---------- Admin Portal ---------- */
+.callout{display:flex; align-items:center; gap:16px; padding:16px 20px; border-radius:14px; margin-bottom:20px; background:var(--accent-soft); border:1px solid var(--border); flex-wrap:wrap;}
+.callout-icon{width:38px;height:38px;border-radius:10px; background:var(--accent); color:var(--surface); display:flex;align-items:center;justify-content:center; font-size:1.05rem; flex-shrink:0;}
+.callout-text{flex:1; min-width:200px;}
+.callout-text .t{font-weight:700; font-size:.92rem;}
+.callout-text .d{font-size:.82rem; color:var(--text-muted); margin-top:2px;}
+
+.roster-row{display:grid; grid-template-columns: 1.7fr 130px 120px 120px 1.2fr; align-items:center; gap:14px; padding:14px 20px; border-bottom:1px solid var(--border);}
+.roster-row:last-child{border-bottom:none;}
+.roster-row:nth-child(even){background:var(--surface-2);}
+.roster-row.dim{opacity:.55;}
+.roster-who{display:flex; align-items:center; gap:11px; min-width:0;}
+.roster-name{font-weight:600; font-size:.92rem;}
+.roster-email{font-size:.76rem; color:var(--text-muted);}
+.role-select{border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); font-size:.8rem; font-weight:600; padding:6px 8px; width:100%;}
+.role-select:disabled{color:var(--text-muted); background:var(--surface-2);}
+.bivy-count{font-family:'IBM Plex Mono',monospace; font-size:.86rem; color:var(--text-muted);}
+.status-pill{display:inline-flex; align-items:center; gap:6px; font-size:.71rem; font-weight:700; padding:4px 10px; border-radius:100px; border:1px solid var(--border); background:var(--surface-2); color:var(--text-muted); text-transform:uppercase; letter-spacing:.03em;}
+.status-pill.active{color:var(--accent-strong); border-color:var(--accent); background:var(--accent-soft);}
+.roster-actions{display:flex; gap:12px; justify-content:flex-end; flex-wrap:wrap;}
+
+.role-key{display:flex; gap:22px; flex-wrap:wrap; padding:14px 20px; background:var(--surface-2); border-bottom:1px solid var(--border); font-size:.78rem; color:var(--text-muted);}
+.role-key b{color:var(--text);}
+
+/* ---------- Modal ---------- */
+.modal-backdrop{position:fixed; inset:0; background:rgba(20,17,12,.45); display:flex; align-items:center; justify-content:center; padding:24px; z-index:50;}
+.modal-card{background:var(--surface); border:1px solid var(--border); border-radius:18px; box-shadow:var(--shadow-lg); max-width:480px; width:100%; max-height:88vh; overflow-y:auto;}
+.modal-head{padding:22px 24px 14px; border-bottom:1px solid var(--border);}
+.modal-head h2{font-size:1.12rem; font-weight:700;}
+.modal-head .d{font-size:.84rem; color:var(--text-muted); margin-top:6px; line-height:1.5;}
+.modal-body{padding:20px 24px;}
+.modal-foot{display:flex; justify-content:space-between; align-items:center; gap:12px; padding:16px 24px; border-top:1px solid var(--border);}
+.modal-x{
+  position:absolute; top:14px; right:14px; width:28px; height:28px; border-radius:50%;
+  border:1px solid var(--border); background:var(--surface); color:var(--text-muted);
+  font-size:.8rem; cursor:pointer; display:flex; align-items:center; justify-content:center;
+}
+.modal-x:hover{background:var(--surface-2); color:var(--text);}
+.field-label{font-size:.78rem; font-weight:700; color:var(--text-muted); margin-bottom:6px; display:block;}
+.modal-select{width:100%; border:1px solid var(--border); border-radius:9px; padding:9px 10px; font-size:.86rem; background:var(--surface); color:var(--text);}
+.confirm-check{display:flex; align-items:flex-start; gap:9px; font-size:.82rem; color:var(--text-muted); margin-top:14px; line-height:1.5;}
+
+.wizard-dots{display:flex; gap:6px; margin-bottom:14px;}
+.wizard-dot{width:22px; height:4px; border-radius:100px; background:var(--border-strong);}
+.wizard-dot.done, .wizard-dot.on{background:var(--accent);}
+.invite-row{display:grid; grid-template-columns:1fr 110px 22px; gap:8px; margin-bottom:8px; align-items:center;}
+.invite-row input{border:1px solid var(--border); border-radius:8px; padding:8px 10px; font-size:.85rem; background:var(--surface); color:var(--text);}
+.invite-row select{border:1px solid var(--border); border-radius:8px; padding:8px 6px; font-size:.8rem; background:var(--surface); color:var(--text);}
+.row-remove{background:none;border:none;color:var(--text-faint); cursor:pointer; font-size:1rem;}
+
+.reassign-row{display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid var(--border);}
+.reassign-row:last-child{border-bottom:none;}
+.reassign-name{font-size:.86rem; font-weight:600;}
+.reassign-meta{font-size:.76rem; color:var(--text-muted);}
+
+[hidden]{display:none !important;}
+
+@media (max-width:760px){
+  .stats{grid-template-columns:1fr;}
+  .stats.cols-4{grid-template-columns:1fr; max-width:none;}
+  .rep-row{grid-template-columns: 1fr; row-gap:10px;}
+  .rep-row .chev{display:none;}
+  .deal-card{grid-template-columns:1fr; row-gap:8px;}
+  .deal-amt{text-align:left;}
+  .roster-row{grid-template-columns:1fr; row-gap:8px;}
+  .roster-actions{justify-content:flex-start;}
+  .drill-top{flex-direction:column; align-items:flex-start;}
+}
+</style>
+
+<div class="shell">
+
+  <div class="protobar">
+    <span class="protobar-label">Prototype only · sign in as</span>
+    <select id="loginSelect" onchange="setLoginAs(this.value)">
+      <option value="jordan">Jordan Tran — Admin</option>
+      <option value="priya">Priya Desai — Manager</option>
+      <option value="sarah">Sarah Chen — Rep</option>
+    </select>
+    <span style="font-size:.72rem; color:var(--text-faint);">Real login decides this in production. Nothing else here is a stand-in.</span>
+  </div>
+
+  <div class="topbar">
+    <div class="wordmark">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M3 15c3-5 6-7 9-7s6 2 9 7" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" fill="none"/>
+      </svg>
+      myBivy
+    </div>
+    <div class="topbar-right">
+      <span class="role-badge" id="roleBadge">Admin</span>
+      <button class="impersonate-btn" id="impersonateBtn" onclick="toggleImpersonate()" hidden>View as Manager</button>
+      <div class="avatar" id="topAvatar">JT</div>
+    </div>
+  </div>
+
+  <div class="impersonate-banner" id="impersonateBanner" hidden>
+    Viewing as Manager. Nothing you do here changes your own Admin permissions.
+    <button onclick="toggleImpersonate()">Exit to Admin Portal</button>
+  </div>
+
+  <!-- ============ REP HOME ============ -->
+  <div id="repHomeView" hidden>
+    <div class="page-head">
+      <div><h1>My bivys</h1><div class="sub">Your own workspace. Billing and the roster live with your admin, not here, and never will on a Team plan.</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Bivys</h2><div class="sort-note" id="repHomeCount"></div></div>
+      <div id="repHomeDealList"></div>
+    </div>
+    <div class="footnote"><b>No billing tab, ever.</b> Reps on a Team plan don't see billing anywhere in their own settings, that stays with the Admin.</div>
+  </div>
+
+  <!-- ============ TEAM OVERVIEW (Manager) ============ -->
+  <div id="teamView" hidden>
+    <div class="page-head">
+      <div>
+        <h1>Team Overview</h1>
+        <div class="sub">A plain rollup of who's carrying what, stacked by pipeline value. Built to sit next to a rep in a 1:1, not to watch them from afar.</div>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="label">Active pipeline</div><div class="value">$1.84M</div><div class="note">Across 5 reps, 23 open bivys</div></div>
+      <div class="stat"><div class="label">Active bivys</div><div class="value">23</div><div class="note">Not yet Closed Won or Lost</div></div>
+      <div class="stat"><div class="label">Active reps</div><div class="value" id="activeRepCount">5</div><div class="note">Add or remove reps from the Admin Portal</div></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Reps</h2><div class="sort-note">Stacked by active pipeline value, highest first</div></div>
+      <div class="legend">
+        <div class="legend-item"><span class="legend-swatch" style="background:var(--st-discovery)"></span>Discovery</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:var(--st-evaluation)"></span>Evaluation</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:var(--st-trial)"></span>Trial</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:var(--st-proposal)"></span>Proposal</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:var(--st-negotiation)"></span>Negotiation</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:var(--st-won)"></span>Closed Won</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:var(--st-lost)"></span>Closed Lost</div>
+      </div>
+      <div id="repList"></div>
+    </div>
+    <div class="footnote"><b>What this screen won't do:</b> no scoring, no red flags, no ranking by anything but the numbers shown.</div>
+  </div>
+
+  <!-- ============ REP DRILL-IN (Manager) ============ -->
+  <div id="repView" hidden>
+    <div class="drill-top">
+      <button class="back-pill" onclick="setView('overview')">← Back to Team Overview</button>
+    </div>
+    <div class="rep-banner">
+      <div class="rep-avatar" id="repAvatarBig" style="background:var(--accent)"></div>
+      <div><h1 id="repNameBig"></h1><div class="sub" id="repSubBig"></div></div>
+      <div class="coach-note">💬 Same view the rep sees of their own bivys. Good to share a screen for this one.</div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Bivys</h2><div class="sort-note" id="repDealCount"></div></div>
+      <div id="dealList"></div>
+    </div>
+    <div class="footnote"><b>Mapping areas tracked:</b> stakeholders identified, MEDDPIC elements captured, discovery &amp; exec summary drafted, tasks planned. Nothing here is scored or averaged into a single number.</div>
+  </div>
+
+  <!-- ============ ADMIN PORTAL ============ -->
+  <div id="adminView" hidden>
+    <div class="page-head">
+      <div>
+        <h1>Admin Portal</h1>
+        <div class="sub">Seats, billing, roles, and who's active. No deal names, values, stages, or mapping progress live here, that's the Manager's view, not the Admin's.</div>
+      </div>
+      <button class="btn btn-primary" onclick="openWizard()">🧭 Run team setup</button>
+    </div>
+
+    <div class="stats cols-4">
+      <div class="stat b-black"><div class="label">Plan</div><div class="value" style="font-size:1.3rem;">Team</div><div class="note">Billed monthly</div></div>
+      <div class="stat b-accent"><div class="label">Seats</div><div class="value" id="seatStat">7 <span style="color:var(--text-faint); font-size:1rem;">/ 10</span></div><div class="note" id="seatNote">3 seats available</div></div>
+      <div class="stat b-gold"><div class="label">Next invoice</div><div class="value">$490</div><div class="note">Oct 12, 2026</div></div>
+      <button class="stat b-green stat-clickable" onclick="openBilling()" style="text-align:left; cursor:pointer;">
+        <div class="label">Billing status</div><div class="value" style="font-size:1.3rem; color:var(--st-won);">Current</div><div class="note">Visa ····4471 · Manage →</div>
+      </button>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head green">
+        <h2>Roster</h2>
+        <button class="btn btn-ghost" onclick="openWizard(1)">+ Add teammate</button>
+      </div>
+      <div class="role-key">
+        <div><b>Admin</b> — billing, roster, roles. Can view as Manager, never sees deal content directly</div>
+        <div><b>Manager</b> — every rep's bivys, the Overview, and dealroom reassignment. No billing, no roster</div>
+        <div><b>Rep</b> — their own bivys and profile only</div>
+      </div>
+      <div id="rosterList"></div>
+    </div>
+
+    <div class="footnote"><b>This replaces the current Settings modal</b> for Admin and Manager on Team plans. A Rep's own settings on Team stay scoped to their profile, no billing tab appears there.</div>
+  </div>
+
+</div>
+
+<!-- ============ DEACTIVATE MODAL ============ -->
+<div class="modal-backdrop" id="deactivateBackdrop" hidden>
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="deactivateTitle">Deactivate rep</h2>
+      <div class="d" id="deactivateSub"></div>
+    </div>
+    <div class="modal-body" id="deactivateBody"></div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeDeactivate()">Cancel</button>
+      <button class="btn btn-primary" id="deactivateConfirmBtn" onclick="confirmDeactivate()" style="background:#a8564f; border-color:#a8564f;">Deactivate</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ REASSIGN MODAL (Manager) ============ -->
+<div class="modal-backdrop" id="reassignBackdrop" hidden>
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>Reassign bivys — <span id="reassignRepName"></span></h2>
+      <div class="d">Choose a new owner for one or more bivys. The current rep loses access the moment you save, the new owner gains it.</div>
+    </div>
+    <div class="modal-body" id="reassignBody"></div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeReassign()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveReassign()">Save changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ FIRST-TIME SETUP POPUP (Admin) ============ -->
+<div class="modal-backdrop" id="firstTimeBackdrop" hidden>
+  <div class="modal-card" style="max-width:440px; position:relative;">
+    <button class="modal-x" onclick="closeFirstTime()" aria-label="Close">✕</button>
+    <div class="modal-body" style="padding-top:26px; text-align:center;">
+      <div class="callout-icon" style="margin:0 auto 14px;">🧭</div>
+      <h2 style="font-size:1.1rem; font-weight:700;">First time setting up Team?</h2>
+      <p style="font-size:.86rem; color:var(--text-muted); line-height:1.6; margin-top:8px;">Walk through adding reps and choosing who's a Manager. You can add more or change roles anytime from the roster below.</p>
+    </div>
+    <div class="modal-foot" style="justify-content:center; border-top:none; padding-top:0;">
+      <button class="btn btn-ghost" onclick="closeFirstTime()">Maybe later</button>
+      <button class="btn btn-primary" onclick="closeFirstTime(); openWizard();">Open setup walkthrough</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ BILLING MODAL (Admin) ============ -->
+<div class="modal-backdrop" id="billingBackdrop" hidden>
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>Manage billing</h2>
+      <div class="d">Team plan · $490/month · renews Oct 12, 2026</div>
+    </div>
+    <div class="modal-body">
+      <div class="field-label">Payment method</div>
+      <div class="reassign-row" style="border-bottom:1px solid var(--border); padding-bottom:14px; margin-bottom:14px;">
+        <div><div class="reassign-name">Visa ····4471</div><div class="reassign-meta">Expires 08/28</div></div>
+        <button class="btn btn-ghost">Update card</button>
+      </div>
+      <div class="field-label">Plan</div>
+      <p style="font-size:.84rem; color:var(--text-muted); line-height:1.6; margin:0 0 14px;">10 seats, billed monthly. Changing seat count or canceling takes effect at the next renewal.</p>
+      <button class="btn-danger-text">Cancel plan</button>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeBilling()">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ TEAM SETUP WIZARD (Admin) ============ -->
+<div class="modal-backdrop" id="wizardBackdrop" hidden>
+  <div class="modal-card">
+    <div class="modal-body" style="padding-top:22px;">
+      <div class="wizard-dots" id="wizardDots"></div>
+      <div id="wizardStep"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" id="wizardBack" onclick="wizardNav(-1)">Back</button>
+      <button class="btn btn-primary" id="wizardNext" onclick="wizardNav(1)">Next</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const stageColor = {
+  "Discovery":"var(--st-discovery)","Evaluation":"var(--st-evaluation)","Trial":"var(--st-trial)",
+  "Proposal":"var(--st-proposal)","Negotiation":"var(--st-negotiation)",
+  "Closed Won":"var(--st-won)","Closed Lost":"var(--st-lost)"
+};
+const stageOrder = ["Discovery","Evaluation","Trial","Proposal","Negotiation","Closed Won","Closed Lost"];
+const areas = ["Stakeholders","MEDDPIC","Discovery / exec summary","Tasks planned"];
+
+const reps = [
+  { id:"sarah", name:"Sarah Chen", initials:"SC",
+    deals:[
+      {name:"Aldermere Health — renewal expansion", stage:"Negotiation", value:210000, mapped:[1,1,1,1]},
+      {name:"Boxwood Fulfillment", stage:"Proposal", value:96000, mapped:[1,1,1,0]},
+      {name:"Talon Freight Co.", stage:"Evaluation", value:64000, mapped:[1,0,1,0]},
+      {name:"Redshift Analytics", stage:"Discovery", value:41000, mapped:[1,0,0,0]},
+      {name:"Ferro Metals Group", stage:"Trial", value:88000, mapped:[1,1,0,1]},
+    ]},
+  { id:"marcus", name:"Marcus Webb", initials:"MW",
+    deals:[
+      {name:"Northline Logistics", stage:"Proposal", value:154000, mapped:[1,1,1,0]},
+      {name:"Verity Underwriting", stage:"Negotiation", value:132000, mapped:[1,1,1,1]},
+      {name:"Cascade Outfitters", stage:"Discovery", value:28000, mapped:[0,0,0,0]},
+      {name:"Ampere Facilities", stage:"Trial", value:71000, mapped:[1,0,1,1]},
+    ]},
+  { id:"dana", name:"Dana Iyer", initials:"DI",
+    deals:[
+      {name:"Kestrel Biotech", stage:"Evaluation", value:118000, mapped:[1,1,0,0]},
+      {name:"Gantry Industrial", stage:"Discovery", value:36000, mapped:[1,0,0,0]},
+      {name:"Solace Home Care", stage:"Proposal", value:82000, mapped:[1,1,1,1]},
+      {name:"Rowlock Marine", stage:"Trial", value:59000, mapped:[0,0,1,0]},
+    ]},
+  { id:"omar", name:"Omar Haddad", initials:"OH",
+    deals:[
+      {name:"Brightline Realty", stage:"Discovery", value:22000, mapped:[1,0,0,0]},
+      {name:"Pinecrest Dental Group", stage:"Evaluation", value:47000, mapped:[1,1,0,0]},
+      {name:"Waypost Construction", stage:"Negotiation", value:99000, mapped:[1,1,1,0]},
+    ]},
+  { id:"lena", name:"Lena Ostrowski", initials:"LO",
+    deals:[
+      {name:"Fieldstone Insurance", stage:"Discovery", value:19000, mapped:[0,0,0,0]},
+      {name:"Cobalt Data Systems", stage:"Trial", value:53000, mapped:[1,0,1,0]},
+      {name:"Marrow Coffee Roasters", stage:"Proposal", value:44000, mapped:[1,1,0,0]},
+    ]},
+];
+
+const roster = [
+  {id:"jordan", name:"Jordan Tran", email:"jordan@northwindrobotics.com", role:"admin", status:"active", initials:"JT"},
+  {id:"priya", name:"Priya Desai", email:"priya@northwindrobotics.com", role:"manager", status:"active", initials:"PD"},
+  {id:"sarah", name:"Sarah Chen", email:"sarah@northwindrobotics.com", role:"rep", status:"active", initials:"SC"},
+  {id:"marcus", name:"Marcus Webb", email:"marcus@northwindrobotics.com", role:"rep", status:"active", initials:"MW"},
+  {id:"dana", name:"Dana Iyer", email:"dana@northwindrobotics.com", role:"rep", status:"active", initials:"DI"},
+  {id:"omar", name:"Omar Haddad", email:"omar@northwindrobotics.com", role:"rep", status:"active", initials:"OH"},
+  {id:"lena", name:"Lena Ostrowski", email:"lena@northwindrobotics.com", role:"rep", status:"active", initials:"LO"},
+  {id:"sam", name:"Sam Rivera", email:"sam.rivera@gmail.com", role:"rep", status:"invited", initials:"SR"},
+];
+
+let ui = { loginAs:"jordan", impersonate:false, view:"admin" };
+
+function activeReps(){ return reps.filter(r => roster.find(p=>p.id===r.id && p.status!=="deactivated")); }
+function activeDeals(rep){ return rep.deals.filter(d=>d.stage!=="Closed Won" && d.stage!=="Closed Lost"); }
+function pipelineValue(rep){ return activeDeals(rep).reduce((s,d)=>s+d.value,0); }
+function fmt(n){ return "$"+n.toLocaleString("en-US"); }
+function stageBreakdown(rep){
+  const counts = {};
+  activeDeals(rep).forEach(d=> counts[d.stage] = (counts[d.stage]||0)+1 );
+  return stageOrder.filter(s=>counts[s]).map(s=>({stage:s, count:counts[s]}));
+}
+
+/* ---------- Team Overview (Manager) ---------- */
+function renderTeam(){
+  const list = activeReps();
+  const sorted = [...list].sort((a,b)=>pipelineValue(b)-pipelineValue(a));
+  const maxPipe = Math.max(...sorted.map(pipelineValue), 1);
+  document.getElementById("activeRepCount").textContent = sorted.length;
+  document.getElementById("repList").innerHTML = sorted.map(rep=>{
+    const pv = pipelineValue(rep);
+    const ad = activeDeals(rep).length;
+    const seg = stageBreakdown(rep);
+    const segHtml = seg.map(s=>`<span class="stage-seg" style="width:${(s.count/ad*100).toFixed(1)}%; background:${stageColor[s.stage]}" title="${s.stage} · ${s.count}"></span>`).join("");
+    const capText = seg.map(s=>`${s.stage} · ${s.count}`).join("   ");
+    return `
+      <div class="rep-row" role="button" tabindex="0" onclick="showRep('${rep.id}')" onkeydown="if(event.key==='Enter')showRep('${rep.id}')">
+        <span class="rep-id">
+          <span class="rep-avatar">${rep.initials}</span>
+          <span><div class="rep-name">${rep.name}</div><div class="rep-meta">${ad} active bivy${ad===1?'':'s'}</div></span>
+        </span>
+        <span class="deal-count"><b>${ad}</b> open</span>
+        <span class="pipe-col"><div class="amt">${fmt(pv)}</div><div class="bar-track"><div class="bar-fill" style="width:${(pv/maxPipe*100).toFixed(1)}%"></div></div></span>
+        <span class="stage-col"><div class="stage-track">${segHtml}</div><div class="stage-caption">${capText}</div></span>
+        <button class="btn-text" style="white-space:nowrap;" onclick="event.stopPropagation(); openReassign('${rep.id}')">⇄ Reassign</button>
+        <span class="chev">›</span>
+      </div>`;
+  }).join("");
+}
+
+function renderDealList(elId, dealsSource, ownerName, opts){
+  opts = opts || {};
+  const order = {}; stageOrder.forEach((s,i)=>order[s]=i);
+  const indexed = dealsSource.map((d,i)=>({d,i}));
+  const sorted = indexed.sort((a,b)=>order[a.d.stage]-order[b.d.stage]);
+  document.getElementById(elId).innerHTML = sorted.map(({d,i})=>{
+    const filled = d.mapped.reduce((a,b)=>a+b,0);
+    const pips = d.mapped.map(m=>`<span class="pip ${m?'filled':'empty'}"></span>`).join("");
+    const missing = areas.filter((a,i)=>!d.mapped[i]);
+    const areaLine = missing.length ? `<span class="missing">Missing:</span> ${missing.join(", ")}` : `All four mapping areas complete`;
+    const reassignBtn = opts.reassignable
+      ? `<button class="btn-text" style="margin-top:4px;" onclick="openReassignSingle('${opts.ownerId}', ${i})">⇄ Reassign</button>`
+      : "";
+    return `
+      <div class="deal-card">
+        <div><div class="deal-name">${d.name}</div><div class="deal-meta">${ownerName ? "Assigned to "+ownerName : ""}</div>${reassignBtn}</div>
+        <div><span class="stage-chip"><span class="dot" style="background:${stageColor[d.stage]}"></span>${d.stage}</span></div>
+        <div class="deal-amt">${fmt(d.value)}</div>
+        <div class="mapping"><div class="mapping-top"><div class="pips">${pips}</div><div class="mapping-frac">${filled} of 4 mapped</div></div><div class="mapping-areas">${areaLine}</div></div>
+      </div>`;
+  }).join("");
+}
+
+let currentDrillRepId = null;
+function showRep(id){
+  currentDrillRepId = id;
+  const rep = reps.find(r=>r.id===id);
+  ui.view = "repdrill";
+  render();
+  document.getElementById("repAvatarBig").textContent = rep.initials;
+  document.getElementById("repNameBig").textContent = rep.name + "’s bivys";
+  const ad = activeDeals(rep).length;
+  document.getElementById("repSubBig").textContent = `${ad} active · ${fmt(pipelineValue(rep))} in open pipeline`;
+  document.getElementById("repDealCount").textContent = `${rep.deals.length} total, sorted by stage`;
+  renderDealList("dealList", rep.deals, rep.name, {reassignable:true, ownerId: rep.id});
+  window.scrollTo({top:0, behavior:"smooth"});
+}
+
+/* ---------- Admin Portal / roster ---------- */
+function renderRoster(){
+  document.getElementById("rosterList").innerHTML = roster.map(p=>{
+    const rep = reps.find(r=>r.id===p.id);
+    const bivyCount = rep ? rep.deals.length : null;
+    const isDeactivated = p.status === "deactivated";
+    const canAct = p.id !== "jordan" && !isDeactivated;
+    return `
+      <div class="roster-row ${isDeactivated?'dim':''}">
+        <div class="roster-who">
+          <span class="avatar" style="width:34px;height:34px;">${p.initials}</span>
+          <span><div class="roster-name">${p.name}</div><div class="roster-email">${p.email}</div></span>
+        </div>
+        <select class="role-select" ${p.id==='jordan' || isDeactivated ?'disabled':''} onchange="changeRole('${p.id}', this.value)">
+          <option value="admin" ${p.role==='admin'?'selected':''} ${p.id!=='jordan'?'hidden':''}>Admin</option>
+          <option value="manager" ${p.role==='manager'?'selected':''}>Manager</option>
+          <option value="rep" ${p.role==='rep'?'selected':''}>Rep</option>
+        </select>
+        <div class="bivy-count">${bivyCount===null?'—':bivyCount+' bivy'+(bivyCount===1?'':'s')}</div>
+        <div><span class="status-pill ${p.status==='active'?'active':''}">${isDeactivated?'Deactivated':p.status==='active'?'Active':'Invited'}</span></div>
+        <div class="roster-actions">
+          ${p.status==='invited' ? `<button class="btn-text">Resend</button>` : ""}
+          ${canAct ? `<button class="btn-danger-text" onclick="openDeactivate('${p.id}')">${p.role==='rep' && bivyCount>0 ? 'Deactivate' : 'Remove'}</button>` : ""}
+        </div>
+      </div>`;
+  }).join("");
+  const activeCount = roster.filter(p=>p.status==='active').length;
+  document.getElementById('seatStat').innerHTML = `${activeCount} <span style="color:var(--text-faint); font-size:1rem;">/ 10</span>`;
+  document.getElementById('seatNote').textContent = `${10-activeCount} seats available`;
+}
+
+function changeRole(id, val){
+  const p = roster.find(r=>r.id===id);
+  p.role = val;
+  renderRoster();
+}
+
+/* ---------- Deactivate / Remove (Admin, blind) ---------- */
+let deactivateTargetId = null;
+function openDeactivate(id){
+  deactivateTargetId = id;
+  const p = roster.find(r=>r.id===id);
+  const rep = reps.find(r=>r.id===id);
+  const bivyCount = rep ? rep.deals.length : 0;
+  document.getElementById('deactivateTitle').textContent = (p.role==='rep' && bivyCount>0 ? "Deactivate " : "Remove ") + p.name;
+
+  if(p.role === 'rep' && bivyCount > 0){
+    document.getElementById('deactivateSub').textContent = `This won't show you what's inside any bivy. Choose who takes over ${p.name}'s pipeline before their access is removed.`;
+    const others = roster.filter(o=>o.role==='rep' && o.id!==id && o.status==='active');
+    document.getElementById('deactivateBody').innerHTML = `
+      <div class="field-label">${p.name} has ${bivyCount} active bivy${bivyCount===1?'':'s'}</div>
+      <select class="modal-select" id="deactivateSuccessor">
+        <option value="">Choose a successor…</option>
+        ${others.map(o=>`<option value="${o.id}">Move all bivys to ${o.name}</option>`).join("")}
+      </select>
+      <div class="confirm-check">☐ This immediately removes ${p.name}'s access to myBivy. This can't be undone from here.</div>`;
+  } else {
+    document.getElementById('deactivateSub').textContent = `${p.name} has no bivys of their own, there's nothing to hand off.`;
+    document.getElementById('deactivateBody').innerHTML = `<div class="confirm-check">☐ This immediately removes ${p.name}'s ${p.role==='manager'?'Manager access':'access'} to myBivy.</div>`;
+  }
+  document.getElementById('deactivateBackdrop').hidden = false;
+}
+function closeDeactivate(){ document.getElementById('deactivateBackdrop').hidden = true; deactivateTargetId = null; }
+function confirmDeactivate(){
+  const p = roster.find(r=>r.id===deactivateTargetId);
+  const rep = reps.find(r=>r.id===deactivateTargetId);
+  if(rep && rep.deals.length > 0){
+    const sel = document.getElementById('deactivateSuccessor');
+    if(!sel || !sel.value){ sel.focus(); return; }
+    const target = reps.find(r=>r.id===sel.value);
+    target.deals.push(...rep.deals.splice(0, rep.deals.length));
+  }
+  p.status = 'deactivated';
+  closeDeactivate();
+  renderRoster();
+  renderTeam();
+}
+
+/* ---------- Reassign (Manager, informed) ---------- */
+let reassignMode = null;   // 'bulk' (from the Team Overview rep row) or 'single' (from one dealroom line)
+let reassignRepId = null;
+let reassignDealIndex = null;
+
+function openReassign(repId){
+  reassignMode = "bulk";
+  reassignRepId = repId;
+  const rep = reps.find(r=>r.id===repId);
+  document.getElementById("reassignRepName").textContent = rep.name;
+  const others = activeReps().filter(r=>r.id!==rep.id);
+  document.getElementById("reassignBody").innerHTML = rep.deals.map((d,i)=>`
+    <div class="reassign-row">
+      <div><div class="reassign-name">${d.name}</div><div class="reassign-meta">${fmt(d.value)} · ${d.stage}</div></div>
+      <select class="role-select" style="width:170px;" data-deal-index="${i}">
+        <option value="">Keep with ${rep.name}</option>
+        ${others.map(o=>`<option value="${o.id}">Move to ${o.name}</option>`).join("")}
+      </select>
+    </div>`).join("");
+  document.getElementById("reassignBackdrop").hidden = false;
+}
+
+function openReassignSingle(repId, dealIndex){
+  reassignMode = "single";
+  reassignRepId = repId;
+  reassignDealIndex = dealIndex;
+  const rep = reps.find(r=>r.id===repId);
+  const deal = rep.deals[dealIndex];
+  const others = activeReps().filter(r=>r.id!==rep.id);
+  document.getElementById("reassignRepName").textContent = rep.name;
+  document.getElementById("reassignBody").innerHTML = `
+    <div class="reassign-row">
+      <div><div class="reassign-name">${deal.name}</div><div class="reassign-meta">${fmt(deal.value)} · ${deal.stage}</div></div>
+      <select class="role-select" style="width:170px;" id="singleReassignSelect">
+        <option value="">Keep with ${rep.name}</option>
+        ${others.map(o=>`<option value="${o.id}">Move to ${o.name}</option>`).join("")}
+      </select>
+    </div>`;
+  document.getElementById("reassignBackdrop").hidden = false;
+}
+
+function closeReassign(){ document.getElementById("reassignBackdrop").hidden = true; }
+
+function saveReassign(){
+  const rep = reps.find(r=>r.id===reassignRepId);
+  if(reassignMode === "single"){
+    const sel = document.getElementById("singleReassignSelect");
+    if(sel && sel.value){
+      const [deal] = rep.deals.splice(reassignDealIndex, 1);
+      reps.find(r=>r.id===sel.value).deals.push(deal);
+    }
+  } else {
+    const selects = document.querySelectorAll('#reassignBody select[data-deal-index]');
+    const moves = [];
+    selects.forEach(sel=>{ const idx = Number(sel.dataset.dealIndex); if(sel.value){ moves.push({idx, toId: sel.value}); } });
+    moves.sort((a,b)=>b.idx-a.idx).forEach(m=>{
+      const [deal] = rep.deals.splice(m.idx, 1);
+      reps.find(r=>r.id===m.toId).deals.push(deal);
+    });
+  }
+  closeReassign();
+  renderTeam();
+  if(ui.view === "repdrill" && currentDrillRepId === rep.id){ showRep(rep.id); }
+}
+
+/* ---------- Billing (Admin) ---------- */
+function openBilling(){ document.getElementById('billingBackdrop').hidden = false; }
+function closeBilling(){ document.getElementById('billingBackdrop').hidden = true; }
+
+/* ---------- Team setup wizard (Admin) ---------- */
+let inviteRows = [{email:"", role:"rep"}, {email:"", role:"rep"}];
+let wizardStep = 0;
+const wizardTotal = 3;
+function openWizard(startAt){
+  wizardStep = startAt || 0;
+  inviteRows = [{email:"", role:"rep"}, {email:"", role:"rep"}];
+  document.getElementById("wizardBackdrop").hidden = false;
+  renderWizard();
+}
+function closeWizard(){ document.getElementById("wizardBackdrop").hidden = true; }
+function addInviteRow(){ inviteRows.push({email:"", role:"rep"}); renderWizardStepBody(); }
+function removeInviteRow(i){ inviteRows.splice(i,1); renderWizardStepBody(); }
+function updateInvite(i, field, val){ inviteRows[i][field] = val; }
+
+function wizardStepHtml(step){
+  if(step===0){
+    return `<h2>Set up your team</h2>
+      <div class="d" style="margin:8px 0 0;">The Admin's setup walkthrough. Creates rep accounts and their bivys, and sets who's a Manager, not what's inside anyone's deals.</div>
+      <p style="font-size:.86rem; color:var(--text-muted); line-height:1.6; margin-top:16px;">Two steps: add your people, and decide who gets Manager visibility versus who's restricted to their own bivy.</p>`;
+  }
+  if(step===1){
+    return `<h2>Add your team</h2>
+      <div class="d" style="margin:8px 0 14px;">Each row creates one account and an empty bivy for them to start filling in. They'll get a real sign-up link once this ships, today it's a pending row until they accept.</div>
+      <div id="inviteRows">${inviteRows.map((r,i)=>`
+        <div class="invite-row">
+          <input type="email" placeholder="name@company.com" value="${r.email}" oninput="updateInvite(${i},'email',this.value)">
+          <select onchange="updateInvite(${i},'role',this.value)">
+            <option value="rep" ${r.role==='rep'?'selected':''}>Rep</option>
+            <option value="manager" ${r.role==='manager'?'selected':''}>Manager</option>
+          </select>
+          <button class="row-remove" onclick="removeInviteRow(${i})" aria-label="Remove row">✕</button>
+        </div>`).join("")}</div>
+      <button class="btn-text" onclick="addInviteRow()">+ Add another</button>`;
+  }
+  return `<h2>You're set</h2>
+    <p style="font-size:.86rem; color:var(--text-muted); line-height:1.6;">Invites go out, roles are already chosen. The roster shows each person as <b>Invited</b> until they accept, then a Rep's bivy is theirs to fill in, an appointed Manager sees the Overview the moment they log in.</p>
+    <div class="footnote" style="margin-top:16px;">Nothing above required looking inside anyone's deals, and nothing will, that's the Manager's job.</div>`;
+}
+function renderWizardStepBody(){ document.getElementById("wizardStep").innerHTML = wizardStepHtml(wizardStep); }
+function renderWizard(){
+  document.getElementById("wizardDots").innerHTML = Array.from({length:wizardTotal}).map((_,i)=>
+    `<span class="wizard-dot ${i<wizardStep?'done':''} ${i===wizardStep?'on':''}"></span>`).join("");
+  renderWizardStepBody();
+  document.getElementById("wizardBack").style.visibility = wizardStep===0 ? "hidden" : "visible";
+  document.getElementById("wizardNext").textContent = wizardStep===wizardTotal-1 ? "Finish" : "Next";
+}
+function wizardNav(dir){
+  wizardStep += dir;
+  if(wizardStep < 0){ wizardStep = 0; }
+  if(wizardStep >= wizardTotal){ closeWizard(); renderRoster(); return; }
+  renderWizard();
+}
+
+/* ---------- Login / role switching ---------- */
+const baseRoleOf = { jordan:"admin", priya:"manager", sarah:"rep" };
+function setLoginAs(id){
+  ui.loginAs = id;
+  ui.impersonate = false;
+  ui.view = baseRoleOf[id] === "admin" ? "admin" : baseRoleOf[id] === "manager" ? "overview" : "rephome";
+  render();
+}
+function toggleImpersonate(){
+  ui.impersonate = !ui.impersonate;
+  ui.view = ui.impersonate ? "overview" : "admin";
+  render();
+}
+
+function render(){
+  const baseRole = baseRoleOf[ui.loginAs];
+  const effectiveRole = (baseRole === "admin" && ui.impersonate) ? "manager" : baseRole;
+  const person = roster.find(p=>p.id===ui.loginAs);
+
+  document.getElementById('topAvatar').textContent = person.initials;
+  document.getElementById('impersonateBtn').hidden = baseRole !== "admin";
+  document.getElementById('impersonateBtn').classList.toggle('active', ui.impersonate);
+  document.getElementById('impersonateBtn').textContent = ui.impersonate ? "Back to Admin" : "View as Manager";
+  document.getElementById('impersonateBanner').hidden = !ui.impersonate;
+
+  const badge = document.getElementById('roleBadge');
+  badge.textContent = effectiveRole === "admin" ? "Admin" : effectiveRole === "manager" ? "Manager" : "Rep";
+  badge.classList.toggle('impersonating', ui.impersonate);
+
+  document.getElementById('repHomeView').hidden = true;
+  document.getElementById('teamView').hidden = true;
+  document.getElementById('repView').hidden = true;
+  document.getElementById('adminView').hidden = true;
+
+  if(effectiveRole === "rep"){
+    document.getElementById('repHomeView').hidden = false;
+    const rep = reps.find(r=>r.id==='sarah');
+    document.getElementById('repHomeCount').textContent = `${rep.deals.length} total, sorted by stage`;
+    renderDealList('repHomeDealList', rep.deals, null);
+    return;
+  }
+  if(effectiveRole === "manager"){
+    if(ui.view === "repdrill"){ document.getElementById('repView').hidden = false; }
+    else { ui.view = "overview"; document.getElementById('teamView').hidden = false; renderTeam(); }
+    return;
+  }
+  // admin
+  document.getElementById('adminView').hidden = false;
+  renderRoster();
+  maybeShowFirstTime();
+}
+function setView(v){ ui.view = v; render(); }
+
+let firstTimeSeen = false;
+function maybeShowFirstTime(){
+  if(!firstTimeSeen){ firstTimeSeen = true; document.getElementById('firstTimeBackdrop').hidden = false; }
+}
+function closeFirstTime(){ document.getElementById('firstTimeBackdrop').hidden = true; }
+
+render();
+</script>
