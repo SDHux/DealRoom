@@ -3126,7 +3126,7 @@ function DealRoom({prospectShareSlug}) {
           <div style={{marginTop:8,padding:11,fontSize:12,color:"rgba(255,255,255,0.5)",textAlign:"center",lineHeight:1.5}}>You've reached your plan's limit of {dealRoomLimit} deal rooms</div>
         :<button onClick={()=>setShowCreator(true)} style={{width:"100%",marginTop:8,display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:11,border:"1.5px dashed rgba(255,255,255,0.25)",borderRadius:9,background:"transparent",color:"rgba(255,255,255,0.85)",fontSize:13.5,fontWeight:600,cursor:"pointer"}}>+ New Deal Room</button>}
       </div>
-      <div style={{paddingTop:12,marginTop:12,borderTop:"1px solid rgba(255,255,255,0.08)",display:"flex",alignItems:"center",gap:10}}>
+      <div style={{paddingTop:12,marginTop:12,borderTop:"1px solid rgba(255,255,255,0.08)",display:"flex",flexWrap:"wrap",alignItems:"center",rowGap:8,columnGap:10}}>
         {myProfile?.photo?
           <img src={myProfile.photo} alt={myProfile.name} style={{width:34,height:34,borderRadius:"50%",objectFit:"cover",flexShrink:0}}/>
         :<div style={{width:34,height:34,borderRadius:"50%",background:P.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color:"#fff",flexShrink:0}}>{myProfile?.initials||"?"}</div>}
