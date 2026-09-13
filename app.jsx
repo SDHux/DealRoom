@@ -1163,8 +1163,8 @@ const NameYourOrg = ({onDone}) => {
   </div>);
 };
 
-const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
-  const [tab,setTab]=useState("team");
+const SettingsModal = ({orgId,myUserId,myRole,isAdmin,onClose}) => {
+  const [tab,setTab]=useState(isAdmin?"team":"profile");
   const [members,setMembers]=useState([]);
   const [invites,setInvites]=useState([]);
   const [org,setOrg]=useState(null);
@@ -1213,7 +1213,32 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
   };
   useEffect(()=>{load();},[orgId]);
 
-  const canManage=targetRole=>myRole==="owner"||(myRole==="admin"&&targetRole==="member");
+  // Deactivation (Data model #6/#5): if the target holds any bivys, Admin must pick a
+  // successor and every bivy moves in one blind bulk RPC call before status flips --
+  // Admin never sees deal names/values/stages, only the count fetched below.
+  const [deactivateTarget,setDeactivateTarget]=useState(null);
+  const [deactivateDealCount,setDeactivateDealCount]=useState(null);
+  const [deactivateSuccessor,setDeactivateSuccessor]=useState("");
+  const [deactivateLoading,setDeactivateLoading]=useState(false);
+
+  const openDeactivate=async member=>{
+    setDeactivateTarget(member);setDeactivateSuccessor("");setDeactivateDealCount(null);
+    const {count}=await sb.from("deals").select("id",{count:"exact",head:true}).eq("org_id",orgId).eq("assigned_to",member.user_id);
+    setDeactivateDealCount(count||0);
+  };
+  const confirmDeactivate=async()=>{
+    if(deactivateDealCount>0&&!deactivateSuccessor)return;
+    setDeactivateLoading(true);
+    if(deactivateDealCount>0){
+      const {error:rpcErr}=await sb.rpc("blind_reassign_all_deals",{p_org_id:orgId,p_from_user:deactivateTarget.user_id,p_to_user:deactivateSuccessor});
+      if(rpcErr){setError(rpcErr.message||"Couldn't reassign this teammate's bivys");setDeactivateLoading(false);return;}
+    }
+    const {error:updErr}=await sb.from("organization_members").update({status:"deactivated"}).eq("id",deactivateTarget.id);
+    setDeactivateLoading(false);
+    if(updErr){setError("Couldn't deactivate this teammate");return;}
+    setDeactivateTarget(null);
+    load();
+  };
 
   // Team Admin/Manager Rework, Data model #1: invite = real account/bivy provisioning, not
   // a passive org_invitations row -- see provision-teammate.mts. Goes through that Netlify
@@ -1249,8 +1274,9 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
     setResendingId(null);
   };
   const cancelInvite=async id=>{await sb.from("org_invitations").delete().eq("id",id);load();};
-  const changeRole=async(memberId,role)=>{await sb.from("organization_members").update({role}).eq("id",memberId);load();};
-  const removeMember=async memberId=>{await sb.from("organization_members").delete().eq("id",memberId);load();};
+  // Admin is not assignable from this control (spec: "there's effectively one Admin per
+  // org today, the converted owner") -- this only ever toggles is_manager, Manager vs Rep.
+  const changeManagerFlag=async(memberId,makeManager)=>{await sb.from("organization_members").update({is_manager:makeManager}).eq("id",memberId);load();};
 
   const saveOrgName=async()=>{
     const {error:err}=await sb.from("organizations").update({name:orgName}).eq("id",orgId);
@@ -1336,14 +1362,21 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
 
   const inp={width:"100%",border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,fontFamily:"inherit",outline:"none"};
 
-  return (<div style={{position:"fixed",inset:0,background:"rgba(17,24,39,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
+  return (<>
+  <div style={{position:"fixed",inset:0,background:"rgba(17,24,39,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
     <div style={{background:P.surface,borderRadius:16,width:620,maxHeight:"85vh",overflowY:"auto",boxShadow:"0 24px 64px rgba(0,0,0,0.16)"}}>
       <div style={{padding:"20px 24px 0",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
         <div className="headline" style={{fontSize:19,color:P.text}}>Team &amp; Settings</div>
         <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,color:P.textMute,cursor:"pointer"}}>×</button>
       </div>
       <div style={{padding:"14px 24px 0",display:"flex",gap:4,borderBottom:`1px solid ${P.border}`}}>
-        {[["team","Team"],["general","General"],["profile","My Profile"],...(myRole==="owner"?[["billing","Billing"]]:[])].map(([k,l])=>(
+        {/* Bug 1 fix: My Profile is never gated -- every signed-in person can reach their
+            own profile (this is also what feeds the prospect-facing rep card, 0037). Team/
+            General/Billing are isAdmin-only now, not myRole==="owner" -- a Manager or Rep
+            sees only the My Profile tab, matching "Rep's own settings stay scoped to
+            profile only" and "Manager... cannot deactivate an account, change anyone's
+            role, or see billing in any form." */}
+        {[...(isAdmin?[["team","Team"],["general","General"]]:[]),["profile","My Profile"],...(isAdmin?[["billing","Billing"]]:[])].map(([k,l])=>(
           <button key={k} onClick={()=>setTab(k)} style={{padding:"8px 14px",background:"none",border:"none",borderBottom:`2px solid ${tab===k?P.accent:"transparent"}`,color:tab===k?P.accent:P.textSec,fontSize:13,fontWeight:tab===k?700:400,cursor:"pointer"}}>{l}</button>
         ))}
       </div>
@@ -1352,34 +1385,47 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
         {loading?<div style={{color:P.textMute,fontSize:13,textAlign:"center",padding:20}}>Loading…</div>:<>
         {tab==="team"&&<div>
           <div style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:10}}>Members</div>
+          {/* Reaching this tab at all already means isAdmin -- no per-row canManage check
+              needed, every other row is this Admin's to manage. Admin isn't an assignable
+              role here (spec: "there's effectively one Admin per org today"), so the only
+              live control is Manager vs Rep via is_manager. */}
           {members.map(m=>(
-            <div key={m.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:`1px solid ${P.bg}`}}>
+            <div key={m.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:`1px solid ${P.bg}`,opacity:m.status==="deactivated"?0.55:1}}>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:13,fontWeight:600,color:P.text}}>{m.fullName||m.email||"Unknown"}</div>
                 <div style={{fontSize:11,color:P.textMute}}>{m.email}</div>
               </div>
               {m.status==="invited"&&<Badge small label="invited" color={P.amber} bg={P.amberBg} border={P.amberBorder}/>}
-              {m.user_id===myUserId?<Badge small label={m.role} color={P.accent} bg={P.accentLight} border="#F0C9B7"/>
-              :canManage(m.role)?(<>
-                <select value={m.role} onChange={e=>changeRole(m.id,e.target.value)} style={{...inp,width:110,padding:"5px 8px",fontSize:11}}>
-                  {myRole==="owner"&&<option value="admin">admin</option>}
-                  <option value="member">member</option>
+              {m.status==="deactivated"&&<Badge small label="deactivated" color={P.textMute} bg={P.bg} border={P.border}/>}
+              {m.user_id===myUserId?<Badge small label="admin" color={P.accent} bg={P.accentLight} border="#F0C9B7"/>
+              :m.is_admin?<Badge small label="admin" color={P.textSec} bg={P.bg} border={P.border}/>
+              :m.status==="deactivated"?<Badge small label={m.is_manager?"manager":"rep"} color={P.textSec} bg={P.bg} border={P.border}/>
+              :(<>
+                <select value={m.is_manager?"manager":"rep"} onChange={e=>changeManagerFlag(m.id,e.target.value==="manager")} style={{...inp,width:100,padding:"5px 8px",fontSize:11}}>
+                  <option value="rep">Rep</option>
+                  <option value="manager">Manager</option>
                 </select>
-                <button onClick={()=>removeMember(m.id)} style={{background:"none",border:"none",color:P.red,fontSize:11,fontWeight:600,cursor:"pointer"}}>Remove</button>
-              </>):<Badge small label={m.role} color={P.textSec} bg={P.bg} border={P.border}/>}
+                <button onClick={()=>openDeactivate(m)} style={{background:"none",border:"none",color:P.red,fontSize:11,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>Deactivate</button>
+              </>)}
             </div>
           ))}
 
           <div style={{fontSize:11,fontWeight:700,color:P.textMute,textTransform:"uppercase",letterSpacing:"0.06em",margin:"20px 0 10px"}}>Invite a teammate</div>
-          {/* TEMPORARY LOCKDOWN: Team tier has open bugs (an easy-to-trigger-by-accident
-              reassign control, a manager-view navigation dead end, the fuller Admin Portal
-              UI) still being ironed out. Blocks a solo (1-member) org from ever sending its
-              first invite -- the org that's already multi-member (used for iterating on
-              these bugs) is deliberately left working, everyone else can't reach this at
-              all. Remove this gate once the open issues are resolved. The invite mechanism
-              itself (provision-teammate.mts, this section below) is the real, reviewed
-              Data model #1 implementation, not a placeholder -- only the *availability* is
-              still gated, not the flow's correctness. */}
+          {/* TEMPORARY LOCKDOWN, reason updated: the original list (profile access, reassign
+              confirmation, navigation dead-end) is now fixed -- Bugs 1/2/3 are all closed
+              above. What's NOT built yet is Team billing/checkout (punch list #11): a
+              solo org's plan_tier stays 'trial' no matter how many people join it, and
+              enforce_seat_cap (0043) only fires for team_5/10/15 -- a 'trial' org has no
+              cap at all. Lifting this gate today would let any Solo customer add unlimited
+              teammates for free, indefinitely, with zero monetization -- a real business
+              gap, not a code-quality one. Keep this in place until the Solo/Team activation
+              split and the Team checkout flow exist and can convert an org's plan_tier to
+              a real paid band before (or as part of) its first invite. The org that's
+              already multi-member (used for iterating on Team features) is deliberately
+              left working; everyone else can't reach this at all. The invite mechanism
+              itself (provision-teammate.mts, this section below) is the real, reviewed,
+              now fully live-tested Data model #1 implementation, not a placeholder -- only
+              the *availability* is still gated, not the flow's correctness. */}
           {members.length===1?
             <div style={{fontSize:12,color:P.textSec,lineHeight:1.6,marginBottom:16,padding:"10px 12px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:8}}>Team invites are temporarily unavailable while we finish testing the Team features. Check back soon.</div>
           :<>
@@ -1514,7 +1560,32 @@ const SettingsModal = ({orgId,myUserId,myRole,onClose}) => {
         </>}
       </div>
     </div>
-  </div>);
+  </div>
+  {/* Deactivate/blind-reassign modal (Data model #5/#6). Admin never sees a single deal
+      name/value/stage here -- deactivateDealCount is a plain count() query, and the
+      successor dropdown lists teammates by name only. */}
+  {deactivateTarget&&<div style={{position:"fixed",inset:0,background:"rgba(17,24,39,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1100}}>
+    <div style={{background:P.surface,borderRadius:16,width:420,padding:24,boxShadow:"0 24px 64px rgba(0,0,0,0.16)"}}>
+      <div className="headline" style={{fontSize:18,color:P.text,marginBottom:8}}>{deactivateDealCount>0?"Deactivate ":"Remove "}{deactivateTarget.fullName||deactivateTarget.email}</div>
+      {deactivateDealCount===null?
+        <div style={{fontSize:13,color:P.textMute,padding:"10px 0"}}>Checking their bivys…</div>
+      :deactivateDealCount>0?(<>
+        <div style={{fontSize:13,color:P.textSec,lineHeight:1.6,marginBottom:16}}>This won't show you what's inside any bivy. Choose who takes over their {deactivateDealCount} active bivy{deactivateDealCount===1?"":"s"} before their access is removed.</div>
+        <select value={deactivateSuccessor} onChange={e=>setDeactivateSuccessor(e.target.value)} style={{width:"100%",border:`1px solid ${P.border}`,borderRadius:6,padding:"9px 12px",fontSize:13,color:P.text,background:P.bg,marginBottom:16}}>
+          <option value="">Choose a successor…</option>
+          {members.filter(m=>m.user_id!==deactivateTarget.user_id&&m.status==="active").map(m=><option key={m.user_id} value={m.user_id}>Move all bivys to {m.fullName||m.email}</option>)}
+        </select>
+      </>):
+        <div style={{fontSize:13,color:P.textSec,lineHeight:1.6,marginBottom:16}}>{deactivateTarget.fullName||deactivateTarget.email} has no bivys of their own, there's nothing to hand off.</div>
+      }
+      <div style={{fontSize:12,color:P.textMute,lineHeight:1.6,marginBottom:18}}>This immediately removes their access to myBivy. This can't be undone from here.</div>
+      <div style={{display:"flex",gap:10}}>
+        <button onClick={confirmDeactivate} disabled={deactivateLoading||deactivateDealCount===null||(deactivateDealCount>0&&!deactivateSuccessor)} style={{flex:1,padding:"11px 20px",background:deactivateLoading?P.border:P.red,border:"none",borderRadius:7,color:"#fff",fontSize:13,fontWeight:700,cursor:deactivateLoading?"not-allowed":"pointer"}}>{deactivateLoading?"Please wait…":deactivateDealCount>0?"Deactivate":"Remove"}</button>
+        <button onClick={()=>setDeactivateTarget(null)} style={{padding:"11px 18px",background:"none",border:`1px solid ${P.border}`,borderRadius:7,color:P.textSec,fontSize:13,cursor:"pointer"}}>Cancel</button>
+      </div>
+    </div>
+  </div>}
+  </>);
 };
 
 // Shown once, over the empty "no deal rooms yet" state, the first time an org's owner logs
@@ -1915,6 +1986,13 @@ function DealRoom({prospectShareSlug}) {
   const [refreshKey,setRefreshKey]=useState(0);
   const [orgId,setOrgId]=useState(null);
   const [myRole,setMyRole]=useState(null);
+  // Team Admin/Manager Rework: the new authority for deal visibility and the Admin/Manager
+  // split -- myRole (the legacy owner/admin/member column) stays around for the older
+  // paths that still key off it (org_invitations, org_members_insert/update/delete), but
+  // none of the new Admin Portal / Team Overview / View-as-Manager UI below should gate on
+  // myRole anymore, only on these two flags.
+  const [isAdmin,setIsAdmin]=useState(false);
+  const [isManager,setIsManager]=useState(false);
   const [myProfile,setMyProfile]=useState(null); // the logged-in user's own profile -- sidebar identity, not "who created this deal"
   const [dealRoomLimit,setDealRoomLimit]=useState(10); // base-plan cap on active deal rooms (organizations.deal_room_limit)
   // Billing state -- mirrors org_is_locked (0018) for UX only; the real gate is the
@@ -2000,6 +2078,11 @@ function DealRoom({prospectShareSlug}) {
   const [orgMembers,setOrgMembers]=useState([]);
   const [showManagerOverview,setShowManagerOverview]=useState(false);
   const [managerViewRep,setManagerViewRep]=useState(null); // null | {id, name}
+  // Bug 2 fix: the reassign select used to commit on the raw onChange event -- a misclick
+  // instantly handed a live deal to the wrong person, no way back except knowing to
+  // reassign it again. Staged now: selecting a name only sets this pending choice; nothing
+  // actually moves until the explicit Confirm click below.
+  const [pendingReassign,setPendingReassign]=useState(null); // null | {dealId, newRepId, newRepName}
 
   // Rep path only: track the Supabase Auth session. Errors here (e.g. a network/CORS
   // problem reaching Supabase) are surfaced instead of leaving the app stuck silently on
@@ -2021,7 +2104,7 @@ function DealRoom({prospectShareSlug}) {
     (async()=>{
       setLoadingDeals(true);
       try{
-      let {data:mem,error:memErr}=await sb.from("organization_members").select("org_id,role").eq("user_id",session.user.id).limit(1).maybeSingle();
+      let {data:mem,error:memErr}=await sb.from("organization_members").select("org_id,role,is_admin,is_manager,status").eq("user_id",session.user.id).limit(1).maybeSingle();
       if(cancelled)return;
       if(memErr)throw memErr;
       if(!mem){
@@ -2032,7 +2115,7 @@ function DealRoom({prospectShareSlug}) {
         if(cancelled)return;
         if(acceptErr)throw acceptErr;
         if(joinedOrgId){
-          ({data:mem,error:memErr}=await sb.from("organization_members").select("org_id,role").eq("user_id",session.user.id).limit(1).maybeSingle());
+          ({data:mem,error:memErr}=await sb.from("organization_members").select("org_id,role,is_admin,is_manager,status").eq("user_id",session.user.id).limit(1).maybeSingle());
           if(cancelled)return;
           if(memErr)throw memErr;
         }else{
@@ -2047,7 +2130,7 @@ function DealRoom({prospectShareSlug}) {
             const {error:rpcErr}=await sb.rpc("create_organization_with_owner",{p_org_name:meta.org_name,p_full_name:meta.full_name||null,p_phone:meta.phone||null});
             if(cancelled)return;
             if(rpcErr)throw rpcErr;
-            ({data:mem,error:memErr}=await sb.from("organization_members").select("org_id,role").eq("user_id",session.user.id).limit(1).maybeSingle());
+            ({data:mem,error:memErr}=await sb.from("organization_members").select("org_id,role,is_admin,is_manager,status").eq("user_id",session.user.id).limit(1).maybeSingle());
             if(cancelled)return;
             if(memErr)throw memErr;
           }
@@ -2072,6 +2155,8 @@ function DealRoom({prospectShareSlug}) {
       setNeedsOrgSetup(false);
       setOrgId(mem.org_id);
       setMyRole(mem.role);
+      setIsAdmin(!!mem.is_admin);
+      setIsManager(!!mem.is_manager);
       const {data:rows,error:rowsErr}=await sb.from("deals").select("*, stakeholders(*), deal_tasks(*), deal_experience_items(*), documents(*)").eq("org_id",mem.org_id).is("archived_at",null);
       if(cancelled)return;
       // A failed query must not be silently treated as "zero deals exist" -- surface it
@@ -2176,17 +2261,16 @@ function DealRoom({prospectShareSlug}) {
     return ()=>{cancelled=true;};
   },[session,prospectShareSlug,refreshKey]);
 
-  // Manager Overview support (TEAM-VERSION-ADMIN-MANAGER-SPEC.md): the org roster,
-  // merged with profiles for display names/avatars -- same merge-in-JS pattern as
-  // SettingsModal's Team tab (organization_members and profiles both reference
-  // auth.users independently, no direct FK PostgREST can embed). Owner/admin only, and
-  // only once org/role are resolved -- a plain member never pays for this query, since
-  // they can't see the Manager Overview or reassign anything anyway.
+  // Admin Portal / Team Overview support: the org roster, merged with profiles for display
+  // names/avatars -- same merge-in-JS pattern as SettingsModal's Team tab (organization_members
+  // and profiles both reference auth.users independently, no direct FK PostgREST can embed).
+  // Gated on the new is_admin/is_manager flags, not the legacy role column -- a plain Rep
+  // (neither flag set) never pays for this query, since they can't see either screen anyway.
   useEffect(()=>{
-    if(prospectShareSlug||!orgId||!(myRole==="owner"||myRole==="admin"))return;
+    if(prospectShareSlug||!orgId||!(isAdmin||isManager))return;
     let cancelled=false;
     (async()=>{
-      const {data:mem}=await sb.from("organization_members").select("user_id,role").eq("org_id",orgId);
+      const {data:mem}=await sb.from("organization_members").select("id,user_id,role,is_admin,is_manager,status").eq("org_id",orgId);
       if(cancelled)return;
       const userIds=(mem||[]).map(m=>m.user_id);
       const {data:profiles}=userIds.length?await sb.from("profiles").select("id,email,full_name,avatar_url").in("id",userIds):{data:[]};
@@ -2195,7 +2279,7 @@ function DealRoom({prospectShareSlug}) {
       setOrgMembers((mem||[]).map(m=>({...m,profile:profileById[m.user_id]||null})));
     })();
     return ()=>{cancelled=true;};
-  },[prospectShareSlug,orgId,myRole]);
+  },[prospectShareSlug,orgId,isAdmin,isManager]);
 
   // Resets the active deal selection whenever a manager drills into (or backs out of) a
   // rep's filtered view -- OR whenever `deals` itself changes underneath the current
@@ -2208,6 +2292,11 @@ function DealRoom({prospectShareSlug}) {
     const visible=managerViewRep?deals.filter(d=>d.assignedTo===managerViewRep.id):deals;
     if(!visible.find(d=>d.id===activeId))setActiveId(visible[0]?.id??null);
   },[managerViewRep,deals]);
+
+  // Clears any staged-but-unconfirmed reassignment (Bug 2 fix) the moment the active deal
+  // or drill-in target changes out from under it -- a pending "move to X?" prompt must never
+  // silently survive a sidebar click onto a different deal, or an exit from the drill-in.
+  useEffect(()=>{setPendingReassign(null);},[activeId,managerViewRep]);
 
   // Visit-duration heartbeat: a browser can't reliably signal "the tab just closed", so
   // this tracks visible-time via the Page Visibility API and periodically overwrites (not
@@ -2370,6 +2459,20 @@ function DealRoom({prospectShareSlug}) {
     if(error){flash("Couldn't reassign deal");return;}
     setDeals(prev=>prev.map(d=>d.id!==dealId?d:{...d,assignedTo:newRepId}));
     flash("Deal reassigned");
+  };
+
+  // Team Admin/Manager Rework, Decisions #2: a real permission grant, not a client-side
+  // display toggle -- flips is_manager on the Admin's OWN organization_members row, so
+  // current_org_is_manager() (and every RLS policy keyed off it) genuinely changes what
+  // this session can see, not just what the UI happens to render. Visible on the Admin's
+  // own roster row like anyone else's (SettingsModal's Team tab reads the same is_manager
+  // column), not a hidden override.
+  const toggleViewAsManager=async()=>{
+    const next=!isManager;
+    const {error}=await sb.from("organization_members").update({is_manager:next}).eq("org_id",orgId).eq("user_id",session.user.id);
+    if(error){flash("Couldn't switch view");return;}
+    setIsManager(next);
+    if(!next){setShowManagerOverview(false);setManagerViewRep(null);}
   };
 
   // One row = one deal, per Mark's explicit scope call: bulk-onboarding an existing
@@ -2956,14 +3059,33 @@ function DealRoom({prospectShareSlug}) {
         <div style={{fontSize:13.5,fontWeight:700,color:"#fff",marginBottom:9}}>{managerViewRep.name}'s deals</div>
         {deal&&orgMembers.length>0&&<div style={{marginBottom:9}}>
           <div style={{fontSize:10.5,color:"rgba(255,255,255,0.85)",marginBottom:4}}>Reassign "{deal.company}" to</div>
-          <select value={deal.assignedTo} onChange={e=>reassignDeal(deal.id,e.target.value)} style={{width:"100%",padding:"6px 8px",borderRadius:6,border:"1px solid rgba(0,0,0,0.18)",background:"rgba(0,0,0,0.15)",color:"#fff",fontSize:11.5}}>
+          {/* Bug 2 fix: this select only stages a choice now (setPendingReassign), it never
+              commits directly. A pending choice for a DIFFERENT deal than the one currently
+              active is cleared below (see the pendingReassign-clearing effect) rather than
+              silently carried over and applied to the wrong deal. */}
+          <select value={pendingReassign?.dealId===deal.id?pendingReassign.newRepId:deal.assignedTo} onChange={e=>{
+            const rep=orgMembers.find(m=>m.user_id===e.target.value);
+            setPendingReassign({dealId:deal.id,newRepId:e.target.value,newRepName:rep?.profile?.full_name||rep?.profile?.email||"Unnamed"});
+          }} style={{width:"100%",padding:"6px 8px",borderRadius:6,border:"1px solid rgba(0,0,0,0.18)",background:"rgba(0,0,0,0.15)",color:"#fff",fontSize:11.5}}>
             {/* Same stale-assignment guard as EditDealModal's identical control -- see
                 that comment for why this fallback option is needed. */}
             {!orgMembers.some(m=>m.user_id===deal.assignedTo)&&<option value={deal.assignedTo} style={{color:"#000"}}>Former team member</option>}
             {orgMembers.map(m=><option key={m.user_id} value={m.user_id} style={{color:"#000"}}>{m.profile?.full_name||m.profile?.email||"Unnamed"}</option>)}
           </select>
+          {pendingReassign?.dealId===deal.id&&<div style={{marginTop:8,padding:"8px 10px",background:"rgba(0,0,0,0.18)",borderRadius:6}}>
+            <div style={{fontSize:11.5,color:"#fff",marginBottom:8}}>Move "{deal.company}" to {pendingReassign.newRepName}?</div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>{reassignDeal(pendingReassign.dealId,pendingReassign.newRepId);setPendingReassign(null);}} style={{flex:1,padding:"6px 0",background:"#fff",border:"none",borderRadius:5,color:P.accentMid,fontSize:11,fontWeight:700,cursor:"pointer"}}>Confirm</button>
+              <button onClick={()=>setPendingReassign(null)} style={{flex:1,padding:"6px 0",background:"none",border:"1px solid rgba(255,255,255,0.4)",borderRadius:5,color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer"}}>Cancel</button>
+            </div>
+          </div>}
         </div>}
-        <button onClick={()=>{setManagerViewRep(null);setShowManagerOverview(true);}} style={{width:"100%",padding:"7px 0",background:"rgba(0,0,0,0.18)",border:"none",borderRadius:6,color:"#fff",fontSize:11.5,fontWeight:600,cursor:"pointer"}}>← Back to Team Overview</button>
+        {/* Bug 3 fix: a direct, always-available way back to the manager's OWN account,
+            not just to Team Overview (which is one hop further, and was the actual source
+            of the "stuck bouncing between two screens" report -- the exit control people
+            were looking for was never a screen away, it just wasn't obvious this was it). */}
+        <button onClick={()=>setManagerViewRep(null)} style={{width:"100%",padding:"7px 0",marginBottom:6,background:"rgba(0,0,0,0.28)",border:"none",borderRadius:6,color:"#fff",fontSize:11.5,fontWeight:700,cursor:"pointer"}}>← Exit to my account</button>
+        <button onClick={()=>{setManagerViewRep(null);setShowManagerOverview(true);}} style={{width:"100%",padding:"7px 0",background:"rgba(0,0,0,0.18)",border:"none",borderRadius:6,color:"#fff",fontSize:11.5,fontWeight:600,cursor:"pointer"}}>Back to Team Overview</button>
       </div>}
       <div style={{flex:1,overflowY:"auto"}}>
         <div className="mono" style={{fontSize:10.5,letterSpacing:"0.08em",textTransform:"uppercase",color:"rgba(255,255,255,0.35)",marginBottom:12,padding:"0 6px"}}>Active Deals</div>
@@ -3006,8 +3128,20 @@ function DealRoom({prospectShareSlug}) {
             orgMembers.length>1, not role alone -- a solo Single-tier org never mounts
             this button (or fetches orgMembers at all, see that effect above), so it has
             zero blast radius for every existing paying customer. */}
-        {(myRole==="owner"||myRole==="admin")&&orgMembers.length>1&&!managerViewRep&&<button onClick={()=>setShowManagerOverview(true)} title="Team Overview" style={{background:"none",border:"none",color:"rgba(255,255,255,0.75)",fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",gap:5}}><span style={{fontSize:15}}>👥</span>Team</button>}
-        {(myRole==="owner"||myRole==="admin")&&<button onClick={()=>setShowSettings(true)} title="Team & Settings" style={{background:"none",border:"none",color:"rgba(255,255,255,0.75)",fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",gap:5}}><span style={{fontSize:21}}>⚙</span>Settings</button>}
+        {/* DEFAULT (Team Admin/Manager Rework): gated on is_manager, not role/orgMembers-count
+            alone -- Admin only sees this after toggling View as Manager (which sets real
+            is_manager=true on their own row), a plain Rep never sees it at all. */}
+        {isManager&&orgMembers.length>1&&!managerViewRep&&<button onClick={()=>setShowManagerOverview(true)} title="Team Overview" style={{background:"none",border:"none",color:"rgba(255,255,255,0.75)",fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",gap:5}}><span style={{fontSize:15}}>👥</span>Team</button>}
+        {/* View as Manager: a real permission grant (flips is_manager on the Admin's own
+            row), not a client-side display toggle -- see toggleViewAsManager. Admin-only;
+            hidden entirely during a manager drill-in to avoid stacking two different
+            "acting as" states at once. */}
+        {isAdmin&&!managerViewRep&&<button onClick={toggleViewAsManager} title={isManager?"Exit Manager view":"View as Manager"} style={{background:isManager?"rgba(214,95,60,0.25)":"none",border:isManager?"1px dashed rgba(214,95,60,0.6)":"none",borderRadius:6,padding:isManager?"3px 8px":0,color:isManager?"#fff":"rgba(255,255,255,0.75)",fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",gap:5}}>{isManager?"Exit Manager view":"View as Manager"}</button>}
+        {/* Settings is never role-gated at the sidebar level -- every signed-in person needs
+            a way to reach their own profile (My Profile never gated, see SettingsModal),
+            regardless of is_admin/is_manager. The modal itself gates Team/General/Billing on
+            isAdmin internally. */}
+        <button onClick={()=>setShowSettings(true)} title="Settings" style={{background:"none",border:"none",color:"rgba(255,255,255,0.75)",fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",gap:5}}><span style={{fontSize:21}}>⚙</span>Settings</button>
         <button onClick={()=>sb.auth.signOut()} title="Sign out" style={{background:"none",border:"none",color:"rgba(255,255,255,0.5)",fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0}}>Sign out</button>
       </div>
     </div>;
@@ -3048,7 +3182,7 @@ function DealRoom({prospectShareSlug}) {
         :<button onClick={()=>setShowCreator(true)} style={{padding:"10px 20px",background:P.accent,border:"none",borderRadius:8,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>+ New Deal Room</button>}
       </div>
       {showCreator&&<DealCreator onSave={createDeal} onImport={importDeals} onClose={()=>setShowCreator(false)} stageLabels={stageLabels}/>}
-      {showSettings&&<SettingsModal orgId={orgId} myUserId={session?.user?.id} myRole={myRole} onClose={()=>setShowSettings(false)}/>}
+      {showSettings&&<SettingsModal orgId={orgId} myUserId={session?.user?.id} myRole={myRole} isAdmin={isAdmin} onClose={()=>setShowSettings(false)}/>}
       {showWelcome&&viewMode==="rep"&&<WelcomeOverlay onDone={dismissWelcome}/>}
     </div>;
   }
@@ -3088,7 +3222,7 @@ function DealRoom({prospectShareSlug}) {
         other org deals, no rep/prospect toggle they could flip to see edit controls. Shared
         with the zero-deal empty state above via the hoisted sidebarJsx. */}
     {sidebarJsx}
-    {showSettings&&<SettingsModal orgId={orgId} myUserId={session?.user?.id} myRole={myRole} onClose={()=>setShowSettings(false)}/>}
+    {showSettings&&<SettingsModal orgId={orgId} myUserId={session?.user?.id} myRole={myRole} isAdmin={isAdmin} onClose={()=>setShowSettings(false)}/>}
     {showWelcome&&viewMode==="rep"&&<WelcomeOverlay onDone={dismissWelcome}/>}
     {showShare&&<ShareModal deal={deal} onClose={()=>setShowShare(false)} forProspect={viewMode==="prospect"}/>}
     {showAddEmbed&&<AddEmbedModal onSave={addEmbedDocument} onClose={()=>setShowAddEmbed(false)}/>}
