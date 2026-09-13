@@ -86,6 +86,7 @@ export default async (req: Request, context: Context) => {
   const link = await linkRes.json();
   const tokenHash: string | undefined = link?.properties?.hashed_token;
   if (!tokenHash) {
+    console.error("activate-teammate: generate_link response had no properties.hashed_token", JSON.stringify(link));
     return json({ error: "Couldn't finish activating your account -- please try again or ask your Admin to resend a code." }, 500);
   }
 
