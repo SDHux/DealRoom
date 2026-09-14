@@ -24,6 +24,11 @@ const ACTIVATE_EMAIL = (() => {
   return v ? decodeURIComponent(v) : null;
 })();
 
+// Team's own signup entry point (?signup=team), read once at load exactly like the two
+// routes above. Deliberately separate from Solo's AuthGate/org-bootstrap flow rather than
+// a branch inside either -- see TeamSignup's own comment for why.
+const TEAM_SIGNUP_ROUTE = new URLSearchParams(window.location.search).get("signup") === "team";
+
 const initialsOf = name => (name || "").split(" ").filter(Boolean).map(w => w[0]).join("").toUpperCase().slice(0, 2);
 const relTime = iso => {
   if (!iso) return "—";
@@ -2426,6 +2431,162 @@ const TeamSetupWizard=({onInvite,onDone,onClose})=>{
   </div>;
 };
 
+// Team's own signup/checkout entry point (?signup=team) -- Bug 11 (Solo vs. Team activation
+// split). Deliberately a fully separate, self-contained flow, not a branch inside AuthGate
+// or DealRoom's existing org-bootstrap effect (the one that reads session.user_metadata.
+// org_name and calls create_organization_with_owner for Solo): this component uses its own
+// metadata keys (team_org_name, not org_name), so that shared effect's `if(meta.org_name)`
+// check can never fire for a Team signup -- it stays completely inert for this path, zero
+// behavioral change to Solo. The only Solo-side infrastructure this reuses at all is the
+// create_organization_with_owner RPC itself, called fresh from here, unmodified -- an org
+// created this way is structurally identical to a Solo org (same is_admin/is_manager=true
+// owner row) until Stripe checkout actually completes and the webhook flips its plan_tier
+// to team_5/10/15; if checkout is abandoned, it's simply an inert trial-shaped org, exactly
+// like any other never-upgraded Solo signup.
+//
+// Flow: pick a tier -> org/name/phone/email/password form -> real Supabase signUp() (own
+// email-confirmation redirect back to this same ?signup=team URL, so the flag survives the
+// round trip) -> once a confirmed session with team_signup metadata exists, silently
+// provision the org and hand straight to Stripe Checkout for the chosen tier. No trial step
+// anywhere in this path, per the no-trial-for-Team decision.
+const TeamSignup=({session,onDone})=>{
+  const meta=session?.user?.user_metadata||{};
+  const isTeamSession=!!session&&meta.team_signup===true;
+
+  const [step,setStep]=useState("plan"); // plan | form | check-email | provisioning | error
+  const [tier,setTier]=useState("team_5");
+  const [orgName,setOrgName]=useState("");
+  const [fullName,setFullName]=useState("");
+  const [phone,setPhone]=useState("");
+  const [email,setEmail]=useState("");
+  const [password,setPassword]=useState("");
+  const [agreed,setAgreed]=useState(false);
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState("");
+
+  // Once a real, confirmed session for this signup exists, provisioning is automatic --
+  // no form left to fill, nothing for the person to click through. Runs once per session.
+  useEffect(()=>{
+    if(!isTeamSession)return;
+    let cancelled=false;
+    (async()=>{
+      setStep("provisioning");setError("");
+      const {data:existing}=await sb.from("organization_members").select("org_id").eq("user_id",session.user.id).limit(1).maybeSingle();
+      if(cancelled)return;
+      if(existing){onDone();return;} // already provisioned (e.g. a reload of this same link) -- just hand off
+      const {data:orgId,error:rpcErr}=await sb.rpc("create_organization_with_owner",{
+        p_org_name:meta.team_org_name||"My Team",p_full_name:meta.team_full_name||null,p_phone:meta.team_phone||null,
+      });
+      if(cancelled)return;
+      if(rpcErr){setError(rpcErr.message||"Couldn't set up your team's workspace.");setStep("error");return;}
+      const {data:{session:freshSession}}=await sb.auth.getSession();
+      try{
+        const res=await fetch("/api/create-team-checkout-session",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+          orgId,accessToken:freshSession?.access_token,tier:meta.team_tier||"team_5",
+        })});
+        const data=await res.json();
+        if(cancelled)return;
+        if(!res.ok||!data.url){setError(data.error||"Your workspace is ready, but checkout couldn't start. Sign in and subscribe from the Admin Portal.");setStep("error");return;}
+        window.location.href=data.url;
+      }catch{
+        if(cancelled)return;
+        setError("Your workspace is ready, but checkout couldn't start. Sign in and subscribe from the Admin Portal.");setStep("error");
+      }
+    })();
+    return ()=>{cancelled=true;};
+    // eslint-disable-next-line
+  },[isTeamSession]);
+
+  const submit=async()=>{
+    if(!orgName.trim()||!fullName.trim()||!email.trim()||!password||!agreed)return;
+    setLoading(true);setError("");
+    try{
+      const {data,error:signUpErr}=await sb.auth.signUp({
+        email:email.trim(),password,
+        options:{
+          emailRedirectTo:`${window.location.origin}/?signup=team`,
+          data:{
+            team_org_name:orgName.trim(),team_full_name:fullName.trim(),team_phone:phone.trim()||null,
+            team_tier:tier,team_signup:true,terms_accepted_at:new Date().toISOString(),
+          },
+        },
+      });
+      if(signUpErr)throw signUpErr;
+      // Supabase intentionally returns no error and an empty identities array for an email
+      // that already has a confirmed account (anti-enumeration) -- same shape AuthGate's
+      // own signup silently mishandles today. Checked here rather than left to repeat.
+      if(!data.session&&data.user&&Array.isArray(data.user.identities)&&data.user.identities.length===0){
+        setError("That email already has a myBivy account. Sign in instead, or use a different email for this new Team workspace.");
+        setLoading(false);return;
+      }
+      setStep("check-email");
+    }catch(e){setError(e.message||"Something went wrong. Please try again.");}
+    setLoading(false);
+  };
+
+  const tp_inp={width:"100%",border:`1px solid ${TP.border}`,borderRadius:9,padding:"10px 12px",fontSize:13.5,color:TP.text,background:TP.surface,fontFamily:"inherit",outline:"none"};
+  const tp_lbl={fontSize:11.5,fontWeight:700,color:TP.textMute,textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:6};
+
+  return <div style={{...tpFont,minHeight:"100vh",background:TP.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:24}}>
+    <TPFontImport/>
+    <div style={{width:"100%",maxWidth:step==="plan"?860:460}}>
+      <div style={{display:"flex",alignItems:"center",gap:9,fontWeight:800,fontSize:19.5,letterSpacing:"-0.01em",color:TP.text,marginBottom:28,justifyContent:"center"}}>
+        <div style={{width:26,height:26,borderRadius:7,background:`linear-gradient(155deg, ${TP.accent}, ${TP.accentStrong})`,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{width:15,height:15}}>{LOGO_MARK}</div></div>
+        myBivy for Teams
+      </div>
+
+      {step==="plan"&&<>
+        <div style={{textAlign:"center",marginBottom:26}}>
+          <div style={{fontSize:24,fontWeight:700,color:TP.text}}>Choose your team size</div>
+          <div style={{fontSize:13.5,color:TP.textMute,marginTop:6}}>Billed monthly, cancel anytime. No trial period for Team -- pick the tier that fits and you're straight in.</div>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:16,marginBottom:24}}>
+          {Object.entries(TIER_SEATS).map(([k,seats])=>(
+            <button key={k} onClick={()=>{setTier(k);setStep("form");}} style={{...tpFont,textAlign:"left",background:TP.surface,border:`1px solid ${TP.border}`,borderRadius:16,padding:"22px 20px",cursor:"pointer"}}>
+              <div style={{fontSize:12,fontWeight:700,color:TP.textFaint,textTransform:"uppercase",letterSpacing:"0.06em"}}>Up to {seats} reps</div>
+              <div style={{...tpMono,fontSize:30,fontWeight:600,color:TP.text,margin:"10px 0 2px"}}>${TIER_PRICE[k]}</div>
+              <div style={{fontSize:12.5,color:TP.textMute,marginBottom:16}}>per month</div>
+              <div style={{padding:"9px 0",textAlign:"center",background:TP.accent,color:"#fff",borderRadius:9,fontWeight:600,fontSize:13}}>Choose this plan</div>
+            </button>
+          ))}
+        </div>
+        <div style={{textAlign:"center"}}><TPBtn kind="text" onClick={()=>window.location.href="/"}>← Back to myBivy</TPBtn></div>
+      </>}
+
+      {step==="form"&&<div style={{background:TP.surface,border:`1px solid ${TP.border}`,borderRadius:18,padding:"32px 32px 28px"}}>
+        <div style={{fontSize:19,fontWeight:700,color:TP.text,marginBottom:4}}>Up to {TIER_SEATS[tier]} reps — ${TIER_PRICE[tier]}/mo</div>
+        <div style={{fontSize:12.5,color:TP.textMute,marginBottom:20}}><button onClick={()=>setStep("plan")} style={{background:"none",border:"none",color:TP.accent,fontWeight:600,cursor:"pointer",padding:0,fontSize:12.5}}>Change plan</button></div>
+        {error&&<div style={{fontSize:12.5,color:TP.red,marginBottom:14,padding:"9px 12px",background:"#fbeceb",border:"1px solid #f0d0cd",borderRadius:8}}>{error}</div>}
+        <div style={{marginBottom:14}}><label style={tp_lbl}>Organization name</label><input value={orgName} onChange={e=>setOrgName(e.target.value)} placeholder="Acme Sales Team" style={tp_inp}/></div>
+        <div style={{marginBottom:14}}><label style={tp_lbl}>Your full name</label><input value={fullName} onChange={e=>setFullName(e.target.value)} placeholder="Jordan Tran" style={tp_inp}/></div>
+        <div style={{marginBottom:14}}><label style={tp_lbl}>Phone number</label><input value={phone} onChange={e=>setPhone(e.target.value)} placeholder="(555) 123-4567" style={tp_inp}/></div>
+        <div style={{marginBottom:14}}><label style={tp_lbl}>Email</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@company.com" style={tp_inp}/></div>
+        <div style={{marginBottom:14}}><label style={tp_lbl}>Password</label><input type="password" value={password} onChange={e=>setPassword(e.target.value)} style={tp_inp}/></div>
+        <div style={{display:"flex",alignItems:"flex-start",gap:8,fontSize:12.5,color:TP.textMute,marginBottom:20}}>
+          <input type="checkbox" checked={agreed} onChange={e=>setAgreed(e.target.checked)} style={{marginTop:2}}/>
+          <span>I agree to the <a href={TERMS_URL} target="_blank" rel="noreferrer" style={{color:TP.accent,fontWeight:600}}>Terms of Service</a> and <a href={PRIVACY_URL} target="_blank" rel="noreferrer" style={{color:TP.accent,fontWeight:600}}>Privacy Policy</a></span>
+        </div>
+        <TPBtn kind="primary" disabled={loading||!orgName.trim()||!fullName.trim()||!email.trim()||!password||!agreed} onClick={submit} style={{width:"100%",justifyContent:"center"}}>{loading?"Please wait…":`Continue to payment — $${TIER_PRICE[tier]}/mo`}</TPBtn>
+      </div>}
+
+      {step==="check-email"&&<div style={{background:TP.surface,border:`1px solid ${TP.border}`,borderRadius:18,padding:"32px",textAlign:"center"}}>
+        <div style={{fontSize:19,fontWeight:700,color:TP.text,marginBottom:8}}>Check your email</div>
+        <div style={{fontSize:13.5,color:TP.textMute,lineHeight:1.6}}>We sent a confirmation link to <b>{email}</b>. Click it to finish setting up your team's workspace and continue to payment.</div>
+      </div>}
+
+      {step==="provisioning"&&<div style={{background:TP.surface,border:`1px solid ${TP.border}`,borderRadius:18,padding:"32px",textAlign:"center"}}>
+        <div style={{fontSize:15,color:TP.textMute}}>Setting up your team's workspace…</div>
+      </div>}
+
+      {step==="error"&&<div style={{background:TP.surface,border:`1px solid ${TP.border}`,borderRadius:18,padding:"32px",textAlign:"center"}}>
+        <div style={{fontSize:19,fontWeight:700,color:TP.text,marginBottom:8}}>Something went wrong</div>
+        <div style={{fontSize:13.5,color:TP.textMute,lineHeight:1.6,marginBottom:20}}>{error}</div>
+        <TPBtn kind="primary" onClick={onDone}>Continue to myBivy</TPBtn>
+      </div>}
+    </div>
+  </div>;
+};
+
 function DealRoom({prospectShareSlug}) {
   const [session,setSession]=useState(undefined); // undefined=checking, null=signed out, object=signed in
   const [isPasswordRecovery,setIsPasswordRecovery]=useState(false); // true between landing on a reset-password link and setting a new password
@@ -2435,6 +2596,12 @@ function DealRoom({prospectShareSlug}) {
   // exchange, not a forgot-password email link, so ResetPassword renders in "activate" mode
   // (stays signed in) instead of "reset" mode (signs back out) -- see ResetPassword's comment.
   const [showActivateScreen,setShowActivateScreen]=useState(!!ACTIVATE_EMAIL);
+  // Team's own signup entry point (Bug 11) -- see TeamSignup's own comment for why this is
+  // a fully separate flag/flow from the Solo session/org-bootstrap state right below it,
+  // not a branch inside it. Stays true until TeamSignup hands off via onDone (successful
+  // provisioning, or an error the person clicked past); check-email/provisioning re-renders
+  // of this same ?signup=team URL keep it true across a real page reload.
+  const [teamSignupActive,setTeamSignupActive]=useState(TEAM_SIGNUP_ROUTE);
   const [activatingViaCode,setActivatingViaCode]=useState(false);
   const [needsOrgSetup,setNeedsOrgSetup]=useState(false);
   const [refreshKey,setRefreshKey]=useState(0);
@@ -3492,6 +3659,10 @@ function DealRoom({prospectShareSlug}) {
     }
   } else {
     // Rep path: auth, then org bootstrap, then real data load.
+    // Checked before session===undefined -- the plan/form steps of Team signup don't need
+    // an auth check to render, and once a session does exist, TeamSignup reads it directly
+    // rather than waiting on this branch's own state.
+    if(teamSignupActive)return <TeamSignup session={session} onDone={()=>{setTeamSignupActive(false);setRefreshKey(k=>k+1);}}/>;
     if(session===undefined)return <LoadingScreen/>;
     // Checked before isPasswordRecovery/AuthGate -- a fresh teammate landing on ?activate=
     // link hasn't verified their code yet, so no PASSWORD_RECOVERY event exists to catch
