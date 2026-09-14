@@ -131,7 +131,14 @@ export default async (req: Request, context: Context) => {
     // check above on the very next attempt for a case that was actually just a failed
     // provisioning, not a real duplicate). Delete it so the Admin can just try again cleanly.
     await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${newUserId}`, { method: "DELETE", headers: serviceHeaders });
-    return json({ error: "Couldn't finish setting up this teammate. Nothing was created -- please try again.", detail }, 500);
+    // Found live during QA: finish_teammate_provisioning's own raise exception text (e.g.
+    // the seat-cap trigger's "plan is at capacity, upgrade to a larger tier") was being
+    // dropped on the floor -- the client only ever saw a generic "please try again", which
+    // reads as a random glitch to an Admin who actually just hit their plan's real limit.
+    // PostgREST wraps a raised exception as {message: "..."} in the response body.
+    let reason: string | undefined;
+    try { reason = JSON.parse(detail)?.message; } catch { /* not JSON, fall through to generic */ }
+    return json({ error: reason || "Couldn't finish setting up this teammate. Nothing was created -- please try again.", detail }, 500);
   }
 
   const origin = req.headers.get("origin") || "https://mybivy.com";
