@@ -926,8 +926,8 @@ const DealCreator = ({onSave,onImport,onClose,stageLabels}) => {
 // Service and Privacy Policy. That's the entire cutover: once these two constants are set,
 // the signup checkbox below automatically switches from plain text to real clickable links.
 // Leave both null only until the URLs are in hand -- don't ship a fake/placeholder URL.
-const TERMS_URL = null;
-const PRIVACY_URL = null;
+const TERMS_URL = 'https://app.termly.io/policy-viewer/policy.html?policyUUID=4ec85596-cfc0-423b-a33b-9a878396a67a';
+const PRIVACY_URL = 'https://app.termly.io/policy-viewer/policy.html?policyUUID=284c3efe-adea-4fd5-831d-9e0b60da569d';
 
 const AuthGate = () => {
   const [mode,setMode]=useState("signin"); // "signin" | "signup" | "check-email"
