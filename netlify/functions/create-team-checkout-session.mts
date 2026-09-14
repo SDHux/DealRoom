@@ -1,4 +1,7 @@
 import type { Context, Config } from "@netlify/functions";
+// Redeploy trigger: STRIPE_PRICE_TEAM_5/10/15 were found missing from Netlify env at some
+// point after they were first set today and had to be re-added; functions don't pick up an
+// env var change until the next deploy, so this touch forces one.
 
 // Team's own checkout, separate from Solo's create-checkout-session.mts: three flat-rate
 // seat-band tiers instead of one price times quantity (spec: "Tiered/banded, hard seat
