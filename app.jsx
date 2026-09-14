@@ -1439,7 +1439,7 @@ const SettingsModal = ({orgId,myUserId,myRole,isAdmin,isTeamOrg,onClose}) => {
               now fully live-tested Data model #1 implementation, not a placeholder -- only
               the *availability* is still gated, not the flow's correctness. */}
           {members.length===1?
-            <div style={{fontSize:12,color:P.textSec,lineHeight:1.6,marginBottom:16,padding:"10px 12px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:8}}>Team invites are temporarily unavailable while we finish testing the Team features. Check back soon.</div>
+            <div style={{fontSize:12,color:P.textSec,lineHeight:1.6,marginBottom:16,padding:"10px 12px",background:P.bg,border:`1px solid ${P.border}`,borderRadius:8}}>Invites require a Team License. Contact SRENE.io to update your license, activate features, and manage members.</div>
           :<>
             <div style={{display:"flex",gap:8,marginBottom:8}}>
               <input placeholder="Full name" value={inviteName} onChange={e=>setInviteName(e.target.value)} style={{...inp,flex:1}}/>
