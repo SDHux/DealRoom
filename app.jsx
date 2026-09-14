@@ -3604,10 +3604,13 @@ function DealRoom({prospectShareSlug}) {
             is_manager=true on their own row), a plain Rep never sees it at all. */}
         {isManager&&orgMembers.length>1&&!managerViewRep&&<button onClick={()=>setShowManagerOverview(true)} title="Team Overview" style={{background:"none",border:"none",color:"rgba(255,255,255,0.75)",fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",gap:5}}><span style={{fontSize:15}}>👥</span>Team</button>}
         {/* View as Manager: a real permission grant (flips is_manager on the Admin's own
-            row), not a client-side display toggle -- see toggleViewAsManager. Admin-only;
-            hidden entirely during a manager drill-in to avoid stacking two different
+            row), not a client-side display toggle -- see toggleViewAsManager. Admin-only,
+            AND gated on orgMembers.length>1 (fixed 2026-09-14) -- without that second
+            check every Solo org's owner is also is_admin=true and would see this Team-only
+            control with nothing behind it to toggle. Same guardrail as the Team button
+            above; hidden entirely during a manager drill-in to avoid stacking two different
             "acting as" states at once. */}
-        {isAdmin&&!managerViewRep&&<button onClick={toggleViewAsManager} title={isManager?"Exit Manager view":"View as Manager"} style={{background:isManager?"rgba(214,95,60,0.25)":"none",border:isManager?"1px dashed rgba(214,95,60,0.6)":"none",borderRadius:6,padding:isManager?"3px 8px":0,color:isManager?"#fff":"rgba(255,255,255,0.75)",fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",gap:5}}>{isManager?"Exit Manager view":"View as Manager"}</button>}
+        {isAdmin&&orgMembers.length>1&&!managerViewRep&&<button onClick={toggleViewAsManager} title={isManager?"Exit Manager view":"View as Manager"} style={{background:isManager?"rgba(214,95,60,0.25)":"none",border:isManager?"1px dashed rgba(214,95,60,0.6)":"none",borderRadius:6,padding:isManager?"3px 8px":0,color:isManager?"#fff":"rgba(255,255,255,0.75)",fontSize:11,fontWeight:600,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",gap:5}}>{isManager?"Exit Manager view":"View as Manager"}</button>}
         {/* Settings is never role-gated at the sidebar level -- every signed-in person needs
             a way to reach their own profile (My Profile never gated, see SettingsModal),
             regardless of is_admin/is_manager. The modal itself gates Team/General/Billing on
