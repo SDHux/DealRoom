@@ -2115,7 +2115,7 @@ const TeamOverviewScreen=({members,deals,onReassign,impersonating,onToggleImpers
 // completeness, anywhere"). Self-contained data fetch/mutations, same pattern and same
 // RPCs as the old SettingsModal's Team+Billing tabs (this is a re-skin, not new logic) --
 // see TEAM-ADMIN-MANAGER-REWORK-SPEC.md's "What's left: the visual layer".
-const AdminPortalScreen=({orgId,myUserId,planTier,subscriptionStatus,currentPeriodEnd,hasStripeSubscription,onToggleImpersonate,onOpenGeneralSettings})=>{
+const AdminPortalScreen=({orgId,myUserId,planTier,subscriptionStatus,currentPeriodEnd,hasStripeSubscription,onToggleImpersonate,onOpenGeneralSettings,onOrgRefresh})=>{
   const [members,setMembers]=useState([]);
   const [loading,setLoading]=useState(true);
   const [inviteName,setInviteName]=useState("");
@@ -2293,7 +2293,7 @@ const AdminPortalScreen=({orgId,myUserId,planTier,subscriptionStatus,currentPeri
       </div>
     </div>}
 
-    {showBilling&&<TeamBillingModal orgId={orgId} planTier={planTier} subscriptionStatus={subscriptionStatus} currentPeriodEnd={currentPeriodEnd} hasStripeSubscription={hasStripeSubscription} onClose={()=>setShowBilling(false)}/>}
+    {showBilling&&<TeamBillingModal orgId={orgId} planTier={planTier} subscriptionStatus={subscriptionStatus} currentPeriodEnd={currentPeriodEnd} hasStripeSubscription={hasStripeSubscription} activeCount={activeCount} onRefresh={onOrgRefresh} onClose={()=>setShowBilling(false)}/>}
 
     {showWizard&&<TeamSetupWizard onInvite={sendInvite} onDone={()=>{setShowWizard(false);load();}} onClose={()=>setShowWizard(false)}/>}
 
@@ -2311,16 +2311,21 @@ const AdminPortalScreen=({orgId,myUserId,planTier,subscriptionStatus,currentPeri
   </div>;
 };
 
-// Billing modal: reuses the exact same Netlify functions as Solo's billing (create-portal-
-// session.mts already generically handles update-card/cancel-plan for any Stripe
-// subscription, regardless of tier -- no separate Team portal endpoint needed). Only
-// checkout (first-time subscribe) needs a Team-specific function, since it has to pick one
-// of three flat-rate tier Prices instead of Solo's single price -- see
-// create-team-checkout-session.mts.
-const TeamBillingModal=({orgId,planTier,subscriptionStatus,currentPeriodEnd,hasStripeSubscription,onClose})=>{
+// Billing modal: update-card/cancel-plan reuse the exact same Netlify function as Solo's
+// billing (create-portal-session.mts already generically handles those for any Stripe
+// subscription, regardless of tier). Checkout (first-time subscribe) and tier changes on an
+// existing subscription both need Team-specific functions instead, since Team picks one of
+// three flat-rate seat-band Prices rather than Solo's single price -- see
+// create-team-checkout-session.mts and update-team-subscription.mts.
+const TeamBillingModal=({orgId,planTier,subscriptionStatus,currentPeriodEnd,hasStripeSubscription,activeCount,onRefresh,onClose})=>{
   const [tier,setTier]=useState(planTier&&TIER_PRICE[planTier]?planTier:"team_5");
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState("");
+  const [changeTierOpen,setChangeTierOpen]=useState(false);
+  const [newTier,setNewTier]=useState(planTier&&TIER_PRICE[planTier]?planTier:"team_5");
+  const [changeLoading,setChangeLoading]=useState(false);
+  const [changeError,setChangeError]=useState("");
+  const [changeSuccess,setChangeSuccess]=useState(false);
   const price=TIER_PRICE[planTier]||TIER_PRICE[tier];
 
   const openPortal=async()=>{
@@ -2343,6 +2348,20 @@ const TeamBillingModal=({orgId,planTier,subscriptionStatus,currentPeriodEnd,hasS
       window.location.href=data.url;
     }catch{setError("Couldn't start checkout");setLoading(false);}
   };
+  const submitChangeTier=async()=>{
+    setChangeLoading(true);setChangeError("");
+    const {data:{session}}=await sb.auth.getSession();
+    try{
+      const res=await fetch("/api/update-team-subscription",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({orgId,accessToken:session.access_token,tier:newTier})});
+      const data=await res.json();
+      if(!res.ok){setChangeError(data.error||"Couldn't change plan");setChangeLoading(false);return;}
+      // plan_tier itself lands via the customer.subscription.updated webhook, not this
+      // response -- give Stripe a moment to actually fire it before re-reading org data,
+      // same reasoning as every other webhook-sourced field in this app.
+      setChangeSuccess(true);setChangeLoading(false);
+      setTimeout(()=>{onRefresh?.();},2000);
+    }catch{setChangeError("Couldn't change plan");setChangeLoading(false);}
+  };
 
   return <div style={{position:"fixed",inset:0,background:"rgba(20,17,12,0.45)",display:"flex",alignItems:"center",justifyContent:"center",padding:24,zIndex:1200}}>
     <div style={{...tpFont,background:TP.surface,border:`1px solid ${TP.border}`,borderRadius:18,maxWidth:480,width:"100%"}}>
@@ -2359,6 +2378,21 @@ const TeamBillingModal=({orgId,planTier,subscriptionStatus,currentPeriodEnd,hasS
         </>}
         {error&&<div style={{fontSize:12.5,color:TP.red,marginBottom:12}}>{error}</div>}
         {hasStripeSubscription?<>
+          <div style={{fontSize:12,fontWeight:700,color:TP.textMute,marginBottom:6}}>SEAT TIER</div>
+          {!changeTierOpen?<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+            <div style={{fontSize:13,color:TP.textMute}}>{activeCount} of {TIER_SEATS[planTier]} seats used</div>
+            <TPBtn kind="ghost" onClick={()=>{setChangeTierOpen(true);setChangeError("");setChangeSuccess(false);setNewTier(planTier);}}>Change plan</TPBtn>
+          </div>:changeSuccess?<div style={{fontSize:13,color:TP.text,marginBottom:16}}>Plan updated — refreshing…</div>:<div style={{marginBottom:16}}>
+            <select value={newTier} onChange={e=>setNewTier(e.target.value)} style={{width:"100%",border:`1px solid ${TP.border}`,borderRadius:9,padding:"9px 10px",fontSize:13.5,marginBottom:10}}>
+              {Object.entries(TIER_SEATS).map(([k,seats])=><option key={k} value={k} disabled={seats<activeCount}>Up to {seats} reps — ${TIER_PRICE[k]}/mo{seats<activeCount?` (fewer than your ${activeCount} active members)`:""}</option>)}
+            </select>
+            {changeError&&<div style={{fontSize:12.5,color:TP.red,marginBottom:10}}>{changeError}</div>}
+            <div style={{fontSize:12,color:TP.textMute,marginBottom:12,lineHeight:1.5}}>Billed immediately, prorated for the rest of this cycle.</div>
+            <div style={{display:"flex",gap:10}}>
+              <TPBtn kind="ghost" onClick={()=>setChangeTierOpen(false)}>Cancel</TPBtn>
+              <TPBtn kind="primary" disabled={changeLoading||newTier===planTier} onClick={submitChangeTier}>{changeLoading?"Please wait…":"Confirm change"}</TPBtn>
+            </div>
+          </div>}
           <div style={{fontSize:12,fontWeight:700,color:TP.textMute,marginBottom:6}}>PAYMENT METHOD</div>
           <div style={{fontSize:13,color:TP.textMute,marginBottom:16}}>Managed in the Stripe billing portal — update card, view invoices, or cancel from there.</div>
           <TPBtn kind="primary" disabled={loading} onClick={openPortal}>{loading?"Please wait…":"Open billing portal"}</TPBtn>
@@ -3806,7 +3840,8 @@ function DealRoom({prospectShareSlug}) {
     return <>
       <AdminPortalScreen orgId={orgId} myUserId={session?.user?.id} planTier={planTier}
         subscriptionStatus={subscriptionStatus} currentPeriodEnd={currentPeriodEnd} hasStripeSubscription={hasStripeSubscription}
-        onToggleImpersonate={toggleViewAsManager} onOpenGeneralSettings={()=>setShowSettings(true)}/>
+        onToggleImpersonate={toggleViewAsManager} onOpenGeneralSettings={()=>setShowSettings(true)}
+        onOrgRefresh={()=>setRefreshKey(k=>k+1)}/>
       {showSettings&&<SettingsModal orgId={orgId} myUserId={session?.user?.id} myRole={myRole} isAdmin={isAdmin} isTeamOrg={isTeamOrg} onClose={()=>setShowSettings(false)}/>}
     </>;
   }

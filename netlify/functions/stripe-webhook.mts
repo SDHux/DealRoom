@@ -86,10 +86,20 @@ export default async (req: Request, context: Context) => {
       }
       case "customer.subscription.updated": {
         const sub = event.data.object;
+        // plan_tier wasn't synced here before -- a price change on an existing subscription
+        // (Team's own update-team-subscription.mts, or a change made directly in Stripe's
+        // dashboard/portal) fired this event but left the org's plan_tier stale, silently
+        // desynced from what Stripe actually has on file. update-team-subscription.mts
+        // always stamps metadata.plan_tier when it changes the price, same as
+        // create-team-checkout-session.mts does at signup, so this only omits the field
+        // (same as checkout.session.completed above) when there's genuinely nothing to sync,
+        // e.g. Solo subscriptions, which don't set this metadata key.
+        const planTier: string | undefined = sub.metadata?.plan_tier;
         await patchOrgByCustomer(sub.customer, {
           stripe_subscription_id: sub.id,
           subscription_status: mapStripeStatus(sub.status),
           current_period_end: new Date(currentPeriodEndOf(sub) * 1000).toISOString(),
+          ...(planTier ? { plan_tier: planTier } : {}),
         });
         break;
       }
