@@ -976,7 +976,19 @@ const AuthGate = () => {
         const {error:signInErr}=await sb.auth.signInWithPassword({email,password});
         if(signInErr)throw signInErr;
       }
-    }catch(e){setError(e.message||"Something went wrong. Please try again.");}
+    }catch(e){
+      const raw=e.message||"Something went wrong. Please try again.";
+      // GoTrue creates the auth.users row *before* it tries to send the
+      // confirmation email, so a failure here (Supabase's built-in mailer is
+      // rate-limited until real SMTP is configured -- see the srene-mybivy
+      // notes) usually still leaves the account created. Signing in is the
+      // more useful next step than Supabase's raw internal error text.
+      if(mode==="signup"&&/confirmation email|rate limit exceeded/i.test(raw)){
+        setError("We're having trouble sending your confirmation email right now. Your account may already be set up -- try signing in below, or wait a few minutes and try again. Still stuck? Email info@srene.io.");
+      }else{
+        setError(raw);
+      }
+    }
     setLoading(false);
   };
 
@@ -2554,7 +2566,15 @@ const TeamSignup=({session,onDone})=>{
         setLoading(false);return;
       }
       setStep("check-email");
-    }catch(e){setError(e.message||"Something went wrong. Please try again.");}
+    }catch(e){
+      const raw=e.message||"Something went wrong. Please try again.";
+      // Same underlying cause as AuthGate's signup -- see the comment there.
+      if(/confirmation email|rate limit exceeded/i.test(raw)){
+        setError("We're having trouble sending your confirmation email right now. Your account may already be set up -- try signing in from the myBivy login page, or wait a few minutes and try again. Still stuck? Email info@srene.io.");
+      }else{
+        setError(raw);
+      }
+    }
     setLoading(false);
   };
 
