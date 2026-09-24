@@ -29,6 +29,19 @@ const ACTIVATE_EMAIL = (() => {
 // a branch inside either -- see TeamSignup's own comment for why.
 const TEAM_SIGNUP_ROUTE = new URLSearchParams(window.location.search).get("signup") === "team";
 
+// Demo workspaces (?demo=solo / ?demo=team) -- a no-login link reps hand to prospects. Each
+// visit gets its own private, fully built workspace cloned server-side (/api/start-demo)
+// that lives 8 hours; reopening the link in the same browser resumes it. ?fresh=1 forces a
+// brand-new copy. See DemoShell/DemoBar near the bottom of this file.
+const DEMO_REQUEST = (() => {
+  const v = new URLSearchParams(window.location.search).get("demo");
+  return v === "solo" || v === "team" ? v : null;
+})();
+const DEMO_FRESH = new URLSearchParams(window.location.search).get("fresh") === "1";
+// Set by DemoBar once the signed-in user is known to be a demo user; read at render time
+// by the few places that must behave differently in a demo (e.g. no Billing tab).
+const DEMO_STATE = { active: false, kind: null, expiresAt: null };
+
 const initialsOf = name => (name || "").split(" ").filter(Boolean).map(w => w[0]).join("").toUpperCase().slice(0, 2);
 const relTime = iso => {
   if (!iso) return "—";
@@ -318,7 +331,10 @@ function computeDealStatus(deal) {
   const items = deal.mapItems.filter(t => phases.includes(t.phase));
   const phaseStatuses = phases.map(phase => {
     const phTasks = items.filter(t => t.phase === phase);
-    if (phTasks.length === 0) return "pending";
+    // A phase whose tasks are all still "pending" is planned, not reached -- counting it
+    // as active made any deal with future Paper Process tasks already sketched in read as
+    // "On Track" no matter how far behind it actually was.
+    if (phTasks.length === 0 || phTasks.every(t => t.status === "pending")) return "pending";
     return phTasks.every(t => t.status === "complete") ? "complete" : "active";
   });
   let actualStage = 0;
@@ -625,7 +641,9 @@ const ProcessTimeline = ({deal,stageLabels,stageDefs=STAGE_DEFS,defaultLabels=DE
   // an earlier one has any tasks -- a real deal doesn't always fill in phases in order).
   const phaseStatuses=steps.map(s=>{
     const phTasks=items.filter(t=>t.phase===s.phase);
-    if(phTasks.length===0)return "pending";
+    // Planned-but-untouched (every task still pending) reads as pending, same rule as
+    // computeDealStatus -- otherwise a fully sketched plan lights up every step at once.
+    if(phTasks.length===0||phTasks.every(t=>t.status==="pending"))return "pending";
     return phTasks.every(t=>t.status==="complete")?"complete":"active";
   });
   // Post-signature mode visually inverts this bar (orange field, white overlay) so a rep
@@ -1187,7 +1205,7 @@ const SettingsModal = ({orgId,myUserId,myRole,isAdmin,isTeamOrg,onClose}) => {
   // General (org name/logo/stage labels) has no mockup-specified replacement yet, so it
   // stays reachable from here for every org, Team included.
   const showTeamTab=isAdmin&&!isTeamOrg;
-  const showBillingTab=isAdmin&&!isTeamOrg;
+  const showBillingTab=isAdmin&&!isTeamOrg&&!DEMO_STATE.active; // no billing inside a demo workspace
   const [tab,setTab]=useState(showTeamTab?"team":isAdmin?"general":"profile");
   const [members,setMembers]=useState([]);
   const [invites,setInvites]=useState([]);
@@ -3659,7 +3677,9 @@ function DealRoom({prospectShareSlug}) {
   const openDocument=async f=>{
     if(f.isEmbed){setShowEmbedDoc(f);logDocumentView(f);return;}
     if(!f.storagePath){flash("File not available");return;}
-    if(f.type==="link"||f.type==="video"){window.open(f.storagePath,"_blank","noopener");logDocumentView(f);return;}
+    // Demo workspaces reference static sample files shipped with the site (/demo-assets/...)
+    // rather than per-org Storage objects, so those open directly like a link.
+    if(f.type==="link"||f.type==="video"||f.storagePath.startsWith("/demo-assets/")){window.open(f.storagePath,"_blank","noopener");logDocumentView(f);return;}
     const {data,error}=await sb.storage.from("deal-documents").createSignedUrl(f.storagePath,300);
     if(error||!data){flash("Couldn't open file");return;}
     window.open(data.signedUrl,"_blank","noopener");
@@ -4560,6 +4580,153 @@ class ErrorBoundary extends React.Component {
 // here would overwrite that same top-level binding (classic script, not a module, so
 // they're the same global property), making this wrapper self-referential and causing
 // infinite recursion the moment React actually renders it.
+// ── Demo workspaces ─────────────────────────────────────────────────────────────────────
+const stripDemoParams = () => {
+  const u = new URL(window.location.href);
+  u.searchParams.delete("demo"); u.searchParams.delete("fresh");
+  window.history.replaceState(null, "", u.pathname + u.search + u.hash);
+};
+const demoMembershipFor = async userId => {
+  const { data } = await sb.from("organization_members")
+    .select("is_admin,is_manager,organizations(is_demo,demo_kind,demo_expires_at)")
+    .eq("user_id", userId).limit(1).maybeSingle();
+  return data || null;
+};
+const demoResetTime = iso => iso ? new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : "";
+
+// Runs before DealRoom ever mounts when the URL carries ?demo=, so DealRoom's own session
+// bootstrap only ever sees the finished demo session (never a half-swapped one).
+const DemoShell = ({ children }) => {
+  const [phase, setPhase] = useState(DEMO_REQUEST ? "starting" : "ready"); // starting | ready | error
+  const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    if (!DEMO_REQUEST) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: { session } } = await sb.auth.getSession();
+        // Resume: same browser, same demo kind, workspace still alive.
+        if (session && !(DEMO_FRESH && attempt === 0) && session.user.user_metadata?.demo_kind === DEMO_REQUEST) {
+          const mem = await demoMembershipFor(session.user.id);
+          const org = mem?.organizations;
+          if (org?.is_demo && new Date(org.demo_expires_at) > new Date()) {
+            stripDemoParams();
+            if (!cancelled) setPhase("ready");
+            return;
+          }
+        }
+        // Local scope only: a real user who opens a demo link shouldn't be signed out of
+        // their account on every other device.
+        if (session) await sb.auth.signOut({ scope: "local" });
+        const res = await fetch("/api/start-demo", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: DEMO_REQUEST }) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "Couldn't start the demo workspace");
+        const { error: signErr } = await sb.auth.signInWithPassword({ email: data.email, password: data.password });
+        if (signErr) throw signErr;
+        stripDemoParams();
+        if (!cancelled) setPhase("ready");
+      } catch (e) {
+        if (!cancelled) { setError(e.message || String(e)); setPhase("error"); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [attempt]);
+
+  const screen = (title, body, action) => (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: P.bg, fontFamily: P.fontBody, padding: 24 }}>
+      <style>{CSS}</style>
+      <div style={{ maxWidth: 420, textAlign: "center" }}>
+        <div style={{ width: 44, height: 44, borderRadius: 11, background: P.ink, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 18px" }}><div style={{ width: 24, height: 24 }}>{LOGO_MARK}</div></div>
+        <div className="headline" style={{ fontSize: 24, color: P.text, marginBottom: 8 }}>{title}</div>
+        <div style={{ fontSize: 14, color: P.textSec, lineHeight: 1.6 }}>{body}</div>
+        {action}
+      </div>
+    </div>
+  );
+  if (phase === "starting") return screen(
+    DEMO_REQUEST === "team" ? "Building your Team demo…" : "Building your demo workspace…",
+    "Five deal rooms, real stakeholders, live activity. Everything you change is private to you and resets after 8 hours.",
+    <div style={{ marginTop: 22, height: 4, background: P.border, borderRadius: 99, overflow: "hidden" }}><div className="shim" style={{ height: "100%" }}><div style={{ height: "100%", width: "100%" }} /></div></div>
+  );
+  if (phase === "error") return screen("The demo didn't start", error,
+    <button onClick={() => { setPhase("starting"); setError(""); setAttempt(a => a + 1); }} style={{ marginTop: 20, padding: "10px 22px", background: P.accent, border: "none", borderRadius: 8, color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>Try again</button>
+  );
+  return <><DemoBar />{children}</>;
+};
+
+// Slim strip above the app for any signed-in demo user: what this is, when it resets, and
+// (Team) a view switcher so a prospect can see the Admin, Manager, and Rep experiences.
+const DemoBar = () => {
+  const [demo, setDemo] = useState(null); // null | {kind, expiresAt, view, missing}
+  const [now, setNow] = useState(Date.now());
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    const load = async s => {
+      const kind = s?.user?.user_metadata?.demo_kind;
+      if (!kind) { DEMO_STATE.active = false; if (!cancelled) setDemo(null); return; }
+      DEMO_STATE.active = true; DEMO_STATE.kind = kind;
+      const mem = await demoMembershipFor(s.user.id);
+      if (cancelled) return;
+      const expiresAt = mem?.organizations?.demo_expires_at || null;
+      DEMO_STATE.expiresAt = expiresAt;
+      setDemo({ kind, expiresAt, missing: !mem, view: mem ? (mem.is_admin ? "admin" : mem.is_manager ? "manager" : "rep") : null });
+    };
+    sb.auth.getSession().then(({ data }) => load(data.session));
+    const { data: sub } = sb.auth.onAuthStateChange((_e, s) => load(s));
+    const iv = setInterval(() => setNow(Date.now()), 30000);
+    return () => { cancelled = true; sub.subscription.unsubscribe(); clearInterval(iv); };
+  }, []);
+  if (!demo) return null;
+
+  const expired = demo.missing || (demo.expiresAt && new Date(demo.expiresAt).getTime() <= now);
+  const restart = () => { window.location.href = `/?demo=${demo.kind}&fresh=1`; };
+  const exit = async () => { await sb.auth.signOut({ scope: "local" }); window.location.href = "https://srene.io/mybivy-for-sales.html"; };
+  const setView = async v => {
+    if (v === demo.view || busy) return;
+    setBusy(true);
+    const { error } = await sb.rpc("demo_set_view", { p_view: v });
+    if (error) { setBusy(false); alert(error.message); return; }
+    window.location.reload();
+  };
+  const btn = { background: "none", border: "1px solid rgba(255,255,255,0.28)", borderRadius: 6, color: "#fff", fontSize: 11.5, fontWeight: 600, padding: "4px 10px", cursor: "pointer", whiteSpace: "nowrap" };
+
+  if (expired) return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 3000, background: "rgba(27,31,35,0.72)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, fontFamily: P.fontBody }}>
+      <div style={{ background: P.surface, borderRadius: 16, padding: "30px 28px", maxWidth: 420, textAlign: "center" }}>
+        <div className="headline" style={{ fontSize: 22, color: P.text, marginBottom: 8 }}>This demo workspace has ended</div>
+        <div style={{ fontSize: 13.5, color: P.textSec, lineHeight: 1.6, marginBottom: 20 }}>Demo workspaces reset after 8 hours, so every visit starts clean. You can spin up a fresh copy in a few seconds.</div>
+        <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+          <button onClick={restart} style={{ padding: "10px 20px", background: P.accent, border: "none", borderRadius: 8, color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>Start a fresh demo</button>
+          <button onClick={exit} style={{ padding: "10px 20px", background: "none", border: `1px solid ${P.border}`, borderRadius: 8, color: P.textSec, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Exit</button>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ background: P.ink, color: "#fff", fontFamily: P.fontBody, padding: "7px 16px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", fontSize: 12 }}>
+      <span className="mono" style={{ background: P.accent, borderRadius: 4, padding: "2px 7px", fontSize: 10, fontWeight: 700, letterSpacing: "0.08em" }}>DEMO</span>
+      <span style={{ color: "rgba(255,255,255,0.8)", flex: "1 1 260px" }}>
+        {demo.kind === "team" ? "Team" : "Solo"} demo workspace. Changes are private to you and reset at <b style={{ color: "#fff" }}>{demoResetTime(demo.expiresAt)}</b>.
+      </span>
+      {demo.kind === "team" && <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+        <span style={{ color: "rgba(255,255,255,0.55)", fontSize: 11 }}>View as</span>
+        <span style={{ display: "inline-flex", background: "rgba(255,255,255,0.08)", borderRadius: 7, padding: 2 }}>
+          {[["admin", "Admin"], ["manager", "Manager"], ["rep", "Rep"]].map(([v, l]) => (
+            <button key={v} onClick={() => setView(v)} disabled={busy} style={{ background: demo.view === v ? P.accent : "transparent", border: "none", borderRadius: 5, color: demo.view === v ? "#fff" : "rgba(255,255,255,0.7)", fontSize: 11.5, fontWeight: 600, padding: "3px 10px", cursor: busy ? "wait" : "pointer" }}>{l}</button>
+          ))}
+        </span>
+      </span>}
+      <button onClick={() => { if (window.confirm("Start over with a fresh copy of the demo? Your changes here will be discarded.")) restart(); }} style={btn}>Start over</button>
+      <button onClick={exit} style={btn}>Exit demo</button>
+    </div>
+  );
+};
+
 globalThis.DealRoomMount = () => React.createElement(ErrorBoundary, null,
-  React.createElement(DealRoom, { prospectShareSlug: PROSPECT_ROUTE })
+  PROSPECT_ROUTE
+    ? React.createElement(DealRoom, { prospectShareSlug: PROSPECT_ROUTE })
+    : React.createElement(DemoShell, null, React.createElement(DealRoom, { prospectShareSlug: PROSPECT_ROUTE }))
 );

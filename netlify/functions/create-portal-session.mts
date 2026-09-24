@@ -47,6 +47,13 @@ export default async (req: Request, context: Context) => {
     return json({ error: "Only the organization owner can manage billing" }, 403);
   }
 
+  // Demo workspaces (?demo=) never touch Stripe.
+  const demoRes = await fetch(`${SUPABASE_URL}/rest/v1/organizations?select=is_demo&id=eq.${orgId}`, { headers: authHeaders });
+  const demoRows = demoRes.ok ? await demoRes.json() : [];
+  if (demoRows[0]?.is_demo) {
+    return json({ error: "Billing is turned off in the demo workspace." }, 403);
+  }
+
   const orgRes = await fetch(
     `${SUPABASE_URL}/rest/v1/organizations?select=stripe_customer_id&id=eq.${orgId}`,
     { headers: authHeaders }

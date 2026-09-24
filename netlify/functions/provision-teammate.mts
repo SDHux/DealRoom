@@ -67,6 +67,16 @@ export default async (req: Request, context: Context) => {
     "Content-Type": "application/json",
   };
 
+  // Demo workspaces (?demo=team): the invite flow works end to end so a prospect can see
+  // it, but the account behind it gets a throwaway demo address instead of the email that
+  // was typed in -- a demo must never claim a real person's email as a myBivy login. The
+  // typed email still shows on the roster (profiles.email), and the whole thing is purged
+  // with the demo.
+  const orgRes = await fetch(`${SUPABASE_URL}/rest/v1/organizations?select=is_demo&id=eq.${orgId}`, { headers: callerHeaders });
+  const orgRows = orgRes.ok ? await orgRes.json() : [];
+  const isDemo = !!orgRows[0]?.is_demo;
+  const authEmail = isDemo ? `demo-${crypto.randomUUID()}-invite@demo.mybivy.com` : cleanEmail;
+
   // A long random value the client never sees and can never authenticate with directly --
   // GoTrue requires some password for a password-auth user, but the actual credential the
   // rep uses is the 6-digit code, verified separately (verify_activation_code, 0044), never
@@ -78,7 +88,7 @@ export default async (req: Request, context: Context) => {
     method: "POST",
     headers: serviceHeaders,
     body: JSON.stringify({
-      email: cleanEmail,
+      email: authEmail,
       password: placeholderPassword,
       email_confirm: true,
       user_metadata: { full_name: fullName || null },

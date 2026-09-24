@@ -66,6 +66,13 @@ export default async (req: Request, context: Context) => {
     return json({ error: "Only this organization's Admin can manage billing" }, 403);
   }
 
+  // Demo workspaces (?demo=) never touch Stripe.
+  const demoRes = await fetch(`${SUPABASE_URL}/rest/v1/organizations?select=is_demo&id=eq.${orgId}`, { headers: authHeaders });
+  const demoRows = demoRes.ok ? await demoRes.json() : [];
+  if (demoRows[0]?.is_demo) {
+    return json({ error: "Billing is turned off in the demo workspace." }, 403);
+  }
+
   // Seat-cap safety on downgrade: the enforce_seat_cap trigger only stops a NEW member from
   // joining past the cap, it has no opinion on an existing roster suddenly exceeding a
   // smaller tier's limit -- that has to be checked here, before Stripe is ever asked to
