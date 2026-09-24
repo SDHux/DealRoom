@@ -15,7 +15,7 @@ import template from "../../demo/template.json";
 // If anything after step 3 fails, the users just created are deleted again.
 
 const SUPABASE_URL = "https://hjumgvnuqvmxdusldeba.supabase.co";
-const DEMOS_PER_HOUR = 60;
+const DEMOS_PER_HOUR = 4;
 const TEAMMATE_COUNT = (template as { teammates: unknown[] }).teammates.length;
 
 export default async (req: Request, _context: Context) => {
