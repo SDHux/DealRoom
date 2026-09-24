@@ -2704,6 +2704,9 @@ function DealRoom({prospectShareSlug}) {
   const [showSettings,setShowSettings]=useState(false);
   const [loadingDeals,setLoadingDeals]=useState(!prospectShareSlug);
   const [deals,setDeals]=useState([]);
+  // Mirrors enforce_deal_room_limit: Team tiers cap each rep's own active deal rooms, so a
+  // Manager who can see the whole team's deals isn't told they're "at limit" by teammates' deals.
+  const myActiveDealCount=isTeamOrg?deals.filter(d=>d.assignedTo===session?.user?.id).length:deals.length;
   const [activeId,setActiveId]=useState(null);
   const [viewMode,setViewMode]=useState(prospectShareSlug?"prospect":"rep");
   const [prospectAuth,setProspectAuth]=useState({});
@@ -3250,13 +3253,14 @@ function DealRoom({prospectShareSlug}) {
     // new row does, matching the enforce_deal_room_limit trigger (0017) this mirrors for UX.
     for(const draft of drafts){
       const existing=known.find(d=>d.company.toLowerCase()===draft.company.toLowerCase());
-      if(!existing&&known.length>=dealRoomLimit){
+      const countingTowardLimit=isTeamOrg?known.filter(d=>d.assignedTo===session.user.id).length:known.length;
+      if(!existing&&countingTowardLimit>=dealRoomLimit){
         results.push({ok:false,action:"limit",company:draft.company});
         continue;
       }
       const result=existing?await mergeDealFromImport(existing,draft):await insertDeal(draft);
       if(result.ok&&result.action==="created"){
-        known.push({...draft,id:result.id,company:draft.company,stakeholders:[]});
+        known.push({...draft,id:result.id,company:draft.company,stakeholders:[],assignedTo:session.user.id});
       }
       results.push(result);
     }
@@ -3811,7 +3815,7 @@ function DealRoom({prospectShareSlug}) {
             which isn't what "viewing their bivy" should ever do. */}
         {managerViewRep?null:isLocked?
           <div style={{marginTop:8,padding:11,fontSize:12,color:"rgba(255,255,255,0.5)",textAlign:"center",lineHeight:1.5}}>Your trial has ended — upgrade to create deal rooms</div>
-        :deals.length>=dealRoomLimit?
+        :myActiveDealCount>=dealRoomLimit?
           <div style={{marginTop:8,padding:11,fontSize:12,color:"rgba(255,255,255,0.5)",textAlign:"center",lineHeight:1.5}}>You've reached your plan's limit of {dealRoomLimit} deal rooms</div>
         :<button onClick={()=>setShowCreator(true)} style={{width:"100%",marginTop:8,display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:11,border:"1.5px dashed rgba(255,255,255,0.25)",borderRadius:9,background:"transparent",color:"rgba(255,255,255,0.85)",fontSize:13.5,fontWeight:600,cursor:"pointer"}}>+ New Deal Room</button>}
       </div>
