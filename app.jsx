@@ -2861,7 +2861,9 @@ function DealRoom({prospectShareSlug}) {
       setMyRole(mem.role);
       setIsAdmin(!!mem.is_admin);
       setIsManager(!!mem.is_manager);
-      const {data:rows,error:rowsErr}=await sb.from("deals").select("*, stakeholders(*), deal_tasks(*), deal_experience_items(*), documents(*)").eq("org_id",mem.org_id).is("archived_at",null);
+      // Newest deal room first -- without an explicit order Postgres returns rows in
+      // whatever physical order they happen to sit in, so the sidebar reshuffled on edits.
+      const {data:rows,error:rowsErr}=await sb.from("deals").select("*, stakeholders(*), deal_tasks(*), deal_experience_items(*), documents(*)").eq("org_id",mem.org_id).is("archived_at",null).order("created_at",{ascending:false});
       if(cancelled)return;
       // A failed query must not be silently treated as "zero deals exist" -- surface it
       // as a real error instead (caught below), same principle as the rest of this fix.
@@ -4619,7 +4621,7 @@ const DemoShell = ({ children }) => {
         // Local scope only: a real user who opens a demo link shouldn't be signed out of
         // their account on every other device.
         if (session) await sb.auth.signOut({ scope: "local" });
-        const res = await fetch("/api/start-demo", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: DEMO_REQUEST }) });
+        const res = await fetch("/api/start-demo", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: DEMO_REQUEST, tz: Intl.DateTimeFormat().resolvedOptions().timeZone }) });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || "Couldn't start the demo workspace");
         const { error: signErr } = await sb.auth.signInWithPassword({ email: data.email, password: data.password });

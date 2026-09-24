@@ -25,12 +25,16 @@ export default async (req: Request, _context: Context) => {
   if (!serviceRoleKey) return json({ error: "The demo isn't configured yet (missing SUPABASE_SERVICE_ROLE_KEY)." }, 500);
 
   let kind: string | undefined;
+  let tz: string | undefined;
   try {
-    ({ kind } = await req.json());
+    ({ kind, tz } = await req.json());
   } catch {
     return json({ error: "Invalid request body" }, 400);
   }
   if (kind !== "solo" && kind !== "team") return json({ error: "Unknown demo type" }, 400);
+  // Viewer's IANA timezone, so seeded buyer visits land in local business hours. The DB
+  // validates it against pg_timezone_names and falls back to Pacific.
+  if (typeof tz !== "string" || !/^[A-Za-z_+\-/0-9]{1,64}$/.test(tz)) tz = "America/Los_Angeles";
 
   const headers = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json" };
   const rpc = (fn: string, body: unknown) =>
@@ -78,7 +82,7 @@ export default async (req: Request, _context: Context) => {
 
     // 4. Clone.
     const seedRes = await rpc("create_demo_workspace", {
-      p_kind: kind, p_owner: owner.id, p_owner_email: owner.email, p_template: template, p_teammates: teammates,
+      p_kind: kind, p_owner: owner.id, p_owner_email: owner.email, p_template: template, p_teammates: teammates, p_tz: tz,
     });
     if (!seedRes.ok) throw new Error(`Couldn't build the demo workspace: ${await seedRes.text()}`);
     const orgId = await seedRes.json();
